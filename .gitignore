@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dataset (too large for git)
+/dataset/
+
+# Model files (can be regenerated)
+gesture/landmarks_dataset.npz
+gesture/gesture_model.pkl
+gesture/gesture_scaler.pkl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
