@@ -19,22 +19,31 @@ class VLCPlayer:
         # Create VLC instance with no video title show and quiet logging
         args = ["--no-video-title-show", "--quiet"]
         if sys.platform == "linux":
-            # Force X11 video output for XWayland compatibility
-            args.extend(["--vout=x11", "--aout=pulse"])
+            # Let VLC auto-detect the best video output
+            # On XWayland (forced via QT_QPA_PLATFORM=xcb), it will use xcb_x11
+            args.append("--aout=pulse")
         self.instance = vlc.Instance(*args)
         self.media_player = self.instance.media_player_new()
         self._current_rate = 1.0
+        self._win_id = None
 
     # ── Window embedding ─────────────────────────────────────────────
 
     def set_window(self, win_id: int):
         """Embed VLC output into a platform-native window handle."""
+        self._win_id = win_id
+        self._apply_window()
+
+    def _apply_window(self):
+        """Apply the stored window ID to the media player."""
+        if self._win_id is None:
+            return
         if sys.platform == "linux":
-            self.media_player.set_xwindow(win_id)
+            self.media_player.set_xwindow(self._win_id)
         elif sys.platform == "win32":
-            self.media_player.set_hwnd(win_id)
+            self.media_player.set_hwnd(self._win_id)
         elif sys.platform == "darwin":
-            self.media_player.set_nsobject(win_id)
+            self.media_player.set_nsobject(self._win_id)
 
     # ── Playback control ─────────────────────────────────────────────
 
@@ -49,6 +58,9 @@ class VLCPlayer:
         # Add network caching for smoother streaming
         media.add_option(":network-caching=3000")
         self.media_player.set_media(media)
+        # Re-apply window embedding before playing — VLC can lose
+        # the window reference between plays
+        self._apply_window()
         self.media_player.play()
         # Restore playback rate
         self._apply_rate()

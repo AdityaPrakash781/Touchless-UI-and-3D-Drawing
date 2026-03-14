@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLineEdit, QPushButton, QLabel,
     QFrame, QScrollArea, QSizePolicy, QStatusBar,
-    QApplication, QMessageBox
+    QApplication, QMessageBox, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import QKeySequence, QShortcut, QFont, QIcon
@@ -23,6 +23,10 @@ from app.controls import TransportBar
 from app.file_browser import pick_video_file, get_recent_files
 from app.styles import STYLESHEET, COLORS
 from gesture.tracker import GestureTracker
+from gesture.settings import (
+    load_gesture_mapping, save_gesture_mapping, reset_gesture_mapping,
+    AVAILABLE_ACTIONS, get_gesture_display_name, get_action_display_name,
+)
 
 
 class VideoFrame(QFrame):
@@ -35,9 +39,14 @@ class VideoFrame(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("videoFrame")
-        self.setStyleSheet("background-color: #000000; border-radius: 8px;")
+        # Plain black background — no border-radius (breaks VLC rendering)
+        self.setStyleSheet("background-color: #000000;")
         self.setMinimumSize(640, 360)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # CRITICAL: Ensure this widget gets a real native X11 window handle
+        # Without this, winId() may return an unstable/invalid ID
+        self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
+        self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
 
     def mouseDoubleClickEvent(self, event):
         self.double_clicked.emit()
@@ -141,6 +150,8 @@ class MainWindow(QMainWindow):
         self._stream_worker = None
         self._search_worker = None
         self._gesture_tracker = None
+        self._gesture_mapping = load_gesture_mapping()
+        self._gesture_combos = {}  # gesture_name -> QComboBox
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -200,17 +211,19 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Ready — Open a file or paste a YouTube link")
 
         # Embed VLC into the video frame
-        # Need to process events first so the frame has a valid winId
-        QTimer.singleShot(100, self._embed_vlc)
+        # Use a longer delay to ensure the window is fully mapped on XWayland
+        QTimer.singleShot(500, self._embed_vlc)
 
     def _embed_vlc(self):
         """Attach the VLC player output to the video frame widget."""
-        if sys.platform == "linux":
-            win_id = int(self.video_frame.winId())
-        else:
-            win_id = int(self.video_frame.winId())
+        # Process pending events to ensure the widget is fully realized
+        QApplication.processEvents()
+        win_id = int(self.video_frame.winId())
         self.player.set_window(win_id)
         self.player.set_volume(80)
+        self.status_bar.showMessage(
+            f"Ready — VLC embedded (Window ID: {win_id})"
+        )
 
     def _build_sidebar(self) -> QTabWidget:
         """Build the sidebar tab widget with YouTube and Local tabs."""
@@ -333,7 +346,7 @@ class MainWindow(QMainWindow):
         gesture_widget = QWidget()
         gesture_layout = QVBoxLayout(gesture_widget)
         gesture_layout.setContentsMargins(8, 12, 8, 8)
-        gesture_layout.setSpacing(10)
+        gesture_layout.setSpacing(8)
 
         gesture_title = QLabel("🤚  Gesture Controls")
         gesture_title.setObjectName("titleLabel")
@@ -363,26 +376,74 @@ class MainWindow(QMainWindow):
         sep3.setFrameShape(QFrame.Shape.HLine)
         gesture_layout.addWidget(sep3)
 
-        gesture_map_label = QLabel("Gesture → Action Map:")
+        # ── Customizable gesture mapping ──
+        gesture_map_label = QLabel("⚙️  Customize Gesture → Action:")
         gesture_map_label.setObjectName("titleLabel")
         gesture_layout.addWidget(gesture_map_label)
 
-        gesture_mappings = [
-            ("✋ Palm", "Play / Pause"),
-            ("✊ Fist", "Stop"),
-            ("👍 Like", "Volume Up"),
-            ("👎 Dislike", "Volume Down"),
-            ("✌️ Peace", "Forward 10s"),
-            ("👆 Two Up", "Rewind 10s"),
-            ("👌 OK", "Speed Cycle"),
-            ("☝️ One", "Forward Skip"),
-            ("🤟 Rock", "Fullscreen"),
-            ("🤙 Call", "— (none)"),
+        # Scrollable area for gesture mappings
+        gesture_scroll_widget = QWidget()
+        gesture_scroll_layout = QVBoxLayout(gesture_scroll_widget)
+        gesture_scroll_layout.setContentsMargins(0, 0, 0, 0)
+        gesture_scroll_layout.setSpacing(4)
+
+        action_keys = list(AVAILABLE_ACTIONS.keys())
+        action_labels = [AVAILABLE_ACTIONS[k] for k in action_keys]
+
+        gestures_in_order = [
+            "palm", "fist", "like", "dislike", "stop", "peace",
+            "ok", "one", "mute", "rock", "two_up", "call", "three", "four",
         ]
-        for gesture, action in gesture_mappings:
-            row = QLabel(f"{gesture}  →  {action}")
-            row.setObjectName("secondaryLabel")
-            gesture_layout.addWidget(row)
+
+        self._gesture_combos = {}
+        for gesture_name in gestures_in_order:
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 2, 0, 2)
+            row_layout.setSpacing(8)
+
+            label = QLabel(get_gesture_display_name(gesture_name))
+            label.setFixedWidth(100)
+            label.setObjectName("secondaryLabel")
+
+            arrow = QLabel("→")
+            arrow.setFixedWidth(16)
+            arrow.setObjectName("secondaryLabel")
+
+            combo = QComboBox()
+            combo.addItems(action_labels)
+            # Set current selection from mapping
+            current_action = self._gesture_mapping.get(gesture_name, "none")
+            if current_action in action_keys:
+                combo.setCurrentIndex(action_keys.index(current_action))
+            combo.setProperty("gesture_name", gesture_name)
+
+            row_layout.addWidget(label)
+            row_layout.addWidget(arrow)
+            row_layout.addWidget(combo, stretch=1)
+
+            self._gesture_combos[gesture_name] = combo
+            gesture_scroll_layout.addWidget(row_widget)
+
+        gesture_scroll = QScrollArea()
+        gesture_scroll.setWidgetResizable(True)
+        gesture_scroll.setWidget(gesture_scroll_widget)
+        gesture_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        gesture_scroll.setMaximumHeight(280)
+        gesture_layout.addWidget(gesture_scroll)
+
+        # Save / Reset buttons
+        btn_row = QHBoxLayout()
+        btn_save = QPushButton("💾  Save Mapping")
+        btn_save.setObjectName("accentButton")
+        btn_save.clicked.connect(self._save_gesture_mapping)
+
+        btn_reset = QPushButton("↩  Reset Defaults")
+        btn_reset.clicked.connect(self._reset_gesture_mapping)
+
+        btn_row.addWidget(btn_save)
+        btn_row.addWidget(btn_reset)
+        gesture_layout.addLayout(btn_row)
 
         # Gesture log
         sep4 = QFrame()
@@ -669,6 +730,25 @@ class MainWindow(QMainWindow):
 
     # ── Gesture Control ──────────────────────────────────────────────
 
+    def _save_gesture_mapping(self):
+        """Save the current dropdown selections as the gesture mapping."""
+        action_keys = list(AVAILABLE_ACTIONS.keys())
+        for gesture_name, combo in self._gesture_combos.items():
+            idx = combo.currentIndex()
+            self._gesture_mapping[gesture_name] = action_keys[idx]
+        save_gesture_mapping(self._gesture_mapping)
+        self.status_bar.showMessage("✅ Gesture mapping saved!")
+
+    def _reset_gesture_mapping(self):
+        """Reset all gesture dropdowns to default mapping."""
+        self._gesture_mapping = reset_gesture_mapping()
+        action_keys = list(AVAILABLE_ACTIONS.keys())
+        for gesture_name, combo in self._gesture_combos.items():
+            default_action = self._gesture_mapping.get(gesture_name, "none")
+            if default_action in action_keys:
+                combo.setCurrentIndex(action_keys.index(default_action))
+        self.status_bar.showMessage("↩ Gesture mapping reset to defaults")
+
     def _toggle_gesture_tracking(self):
         """Start or stop gesture tracking."""
         if self._gesture_tracker and self._gesture_tracker.isRunning():
@@ -679,6 +759,8 @@ class MainWindow(QMainWindow):
             self.gesture_status.setText("Status: Inactive")
             self.status_bar.showMessage("Gesture tracking stopped")
         else:
+            # Save current dropdown selections before starting
+            self._save_gesture_mapping()
             self._gesture_tracker = GestureTracker(camera_index=0)
             self._gesture_tracker.gesture_detected.connect(self._on_gesture_detected)
             self._gesture_tracker.status_changed.connect(
@@ -694,12 +776,15 @@ class MainWindow(QMainWindow):
 
     def _on_gesture_detected(self, gesture: str, action: str, confidence: float):
         """Handle a detected gesture by performing the mapped action."""
-        # Update gesture log
+        # Use the USER's custom mapping, not the tracker's built-in one
+        custom_action = self._gesture_mapping.get(gesture, action)
+
+        display_action = get_action_display_name(custom_action)
         self.gesture_log.setText(
-            f"🤚 {gesture} → {action} ({confidence:.0%})"
+            f"🤚 {get_gesture_display_name(gesture)} → {display_action} ({confidence:.0%})"
         )
         self.status_bar.showMessage(
-            f"Gesture: {gesture} → {action} ({confidence:.0%})"
+            f"Gesture: {gesture} → {display_action} ({confidence:.0%})"
         )
 
         # Execute the action
@@ -710,14 +795,14 @@ class MainWindow(QMainWindow):
             "volume_up": lambda: self._adjust_volume(10),
             "volume_down": lambda: self._adjust_volume(-10),
             "forward": lambda: self.player.seek_relative(10000),
-            "forward_skip": lambda: self.player.seek_relative(10000),
+            "forward_skip": lambda: self.player.seek_relative(30000),
             "rewind": lambda: self.player.seek_relative(-10000),
             "speed_cycle": lambda: self.player.cycle_speed(forward=True),
             "mute_toggle": self._on_mute,
             "fullscreen": self._toggle_fullscreen,
         }
 
-        handler = action_map.get(action)
+        handler = action_map.get(custom_action)
         if handler:
             handler()
 

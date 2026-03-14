@@ -1,136 +1,182 @@
-# GestureVLC 🎬
+# GestureVLC — Touchless Media Player
 
-A cross-platform VLC media player with YouTube integration (ad-free playback) and future gesture controls.
+A cross-platform media player built on top of VLC with **ad-free YouTube playback** and **real-time hand gesture controls**.
 
-Built with **Python**, **PyQt6**, **python-vlc**, and **yt-dlp**.
+> 🤚 Control video playback with hand gestures — no keyboard or mouse needed.
 
----
-
-## Features
-
-- 🎥 **Local video playback** — Play any video file (mp4, mkv, avi, webm, mov, etc.) via VLC
-- 📺 **YouTube ad-free** — Paste a YouTube URL or search YouTube, plays directly via VLC with zero ads
-- 🔍 **YouTube search** — Search for videos directly from the app sidebar
-- ⏯️ **Full transport controls** — Play/pause, stop, seek, volume, playback speed (0.25x–3x), fullscreen
-- ⌨️ **Keyboard shortcuts** — Space (play/pause), F (fullscreen), arrow keys (seek/volume), M (mute), etc.
-- 🕐 **Recent files** — Remembers your recently played local files
-- 🌑 **Dark theme** — Modern, premium dark UI
-- 🤚 **Gesture controls** — *Coming soon* — hand gesture recognition via MediaPipe
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)
 
 ---
 
-## Requirements
+## ✨ Features
 
-- **Python 3.10+**
-- **VLC media player** installed on your system
-  - Linux: `sudo pacman -S vlc` (Arch) or `sudo apt install vlc` (Debian/Ubuntu)
-  - Windows: Download from [videolan.org](https://www.videolan.org/)
-  - macOS: `brew install vlc` or download from videolan.org
+| Feature | Description |
+|---------|-------------|
+| 🎬 **VLC Video Player** | Embedded VLC for local video playback |
+| 📺 **Ad-Free YouTube** | Paste a URL or search — plays without ads via `yt-dlp` |
+| 🤚 **Gesture Controls** | Control playback with 14 hand gestures via webcam |
+| ⚙️ **Customizable Gestures** | Reassign any gesture to any media action |
+| ⌨️ **Keyboard Shortcuts** | Full keyboard control (Space, F, ←/→, ↑/↓, etc.) |
+| 🌙 **Dark Theme** | GitHub-inspired dark UI |
+| 🖥️ **Cross-Platform** | Linux, Windows, macOS |
 
 ---
 
-## Installation
+## 🚀 Quick Start
+
+### Automated Setup (Recommended)
 
 ```bash
-# Clone or navigate to the project directory
-cd gesturevlc
+git clone https://github.com/AdityaPrakash781/Touchless-UI-and-3D-Drawing.git
+cd Touchless-UI-and-3D-Drawing
+chmod +x setup.sh
+./setup.sh
+```
 
-# Create virtual environment
+### Manual Setup
+
+#### Prerequisites
+- **Python 3.10+**
+- **VLC Media Player** (system install)
+- **Webcam** (for gesture controls, optional)
+
+#### Step 1: Clone & Create Environment
+```bash
+git clone https://github.com/AdityaPrakash781/Touchless-UI-and-3D-Drawing.git
+cd Touchless-UI-and-3D-Drawing
 python3 -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# .venv\Scripts\activate   # Windows
+```
 
-# Activate it
-source .venv/bin/activate   # Linux / macOS
-# .venv\Scripts\activate    # Windows
-
-# Install dependencies
+#### Step 2: Install Dependencies
+```bash
 pip install -r requirements.txt
 ```
 
----
-
-## Usage
-
+#### Step 3: Download Hand Landmark Model
 ```bash
-# Activate your virtual environment first
-source .venv/bin/activate
+curl -o gesture/hand_landmarker.task \
+  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+```
 
-# Run the app
+#### Step 4: Run
+```bash
 python3 main.py
 ```
 
-### YouTube URL Playback
-1. Go to the **YouTube** tab in the sidebar
-2. Paste a YouTube URL in the URL field
-3. Click **▶ Play** or press Enter
-4. The video plays ad-free in the VLC player
+---
 
-### YouTube Search
-1. Type a search query in the search field
-2. Click **Search** or press Enter
-3. Click any result card to play it
+## 🎮 Gesture Controls
 
-### Local File Playback
-1. Go to the **Local** tab in the sidebar
-2. Click **📂 Browse Files…** to open a file
-3. Or click a recent file to replay it
+| Gesture | Default Action |
+|---------|---------------|
+| ✋ Palm | Play / Pause |
+| ✊ Fist | Stop |
+| 👍 Like | Volume Up |
+| 👎 Dislike | Volume Down |
+| ✌️ Peace | Forward 10s |
+| 👆 Two Up | Rewind 10s |
+| 👌 OK | Cycle Speed |
+| ☝️ One | Forward 30s |
+| 🤟 Rock | Fullscreen |
+| 🤫 Mute | Mute/Unmute |
+
+> All gestures are **fully customizable** via the Gestures tab in the app.
+
+### Training the Gesture Model
+
+To train the gesture classifier from scratch:
+
+1. Download the [HaGRID dataset](https://github.com/hukenovs/hagrid) (120K hand gesture images)
+2. Place it at `dataset/hagrid-sample-120k-384p/`
+3. Run extraction and training:
+```bash
+source .venv/bin/activate
+python3 gesture/extract_landmarks.py   # Extract MediaPipe landmarks (~5 min)
+python3 gesture/train_classifier.py    # Train classifier (~10 min)
+```
+
+The trained model achieves **94% accuracy** across 14 gesture classes.
 
 ---
 
-## Keyboard Shortcuts
+## ⌨️ Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
 | `Space` | Play / Pause |
-| `F` | Toggle fullscreen |
-| `Escape` | Exit fullscreen |
-| `←` / `→` | Seek ±10 seconds |
-| `Shift+←` / `Shift+→` | Seek ±30 seconds |
-| `↑` / `↓` | Volume ±5% |
-| `M` | Mute / Unmute |
+| `F` | Fullscreen |
+| `Escape` | Exit Fullscreen |
+| `←` / `→` | Seek -10s / +10s |
+| `Shift+←` / `Shift+→` | Seek -30s / +30s |
+| `↑` / `↓` | Volume Up / Down |
+| `M` | Mute |
 | `S` | Stop |
-| `]` / `[` | Speed up / Speed down |
-| `Ctrl+O` | Open file |
+| `Ctrl+O` | Open File |
+| `]` / `[` | Speed Up / Down |
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 gesturevlc/
-├── main.py                  # Entry point
-├── requirements.txt         # Python dependencies
-├── README.md
+├── main.py                 # Entry point
+├── setup.sh                # Automated setup script
+├── requirements.txt        # Python dependencies
 ├── app/
-│   ├── __init__.py
-│   ├── main_window.py       # PyQt6 main window + VLC widget
-│   ├── vlc_player.py        # VLC wrapper
-│   ├── youtube.py           # yt-dlp integration
-│   ├── file_browser.py      # Local file picker
-│   ├── controls.py          # Transport bar widget
-│   └── styles.py            # Dark theme stylesheet
-└── gesture/                 # Future: gesture recognition
-    └── __init__.py
+│   ├── main_window.py      # Main application window (PyQt6)
+│   ├── vlc_player.py       # VLC media player wrapper
+│   ├── youtube.py          # YouTube search & stream extraction
+│   ├── controls.py         # Transport bar (play/pause/seek/volume)
+│   ├── file_browser.py     # Local file browser
+│   └── styles.py           # Dark theme stylesheet
+├── gesture/
+│   ├── extract_landmarks.py  # HaGRID → MediaPipe landmarks
+│   ├── train_classifier.py   # Train RF/GBM/MLP classifiers
+│   ├── tracker.py             # Real-time webcam gesture tracker
+│   ├── settings.py            # Gesture customization persistence
+│   └── hand_landmarker.task   # MediaPipe model (downloaded)
+└── dataset/                   # HaGRID dataset (not included)
 ```
 
 ---
 
-## Gesture Controls (Planned)
+## 🐛 Troubleshooting
 
-The gesture module will use **MediaPipe Hands** for real-time hand tracking and a lightweight classifier for gesture recognition.
+### Video not visible (Linux/Wayland)
+The app automatically forces XWayland mode. If video still doesn't show:
+```bash
+QT_QPA_PLATFORM=xcb python3 main.py
+```
 
-**Recommended dataset:** [HaGRID](https://arxiv.org/abs/2206.08219) — 552K images, 18 gesture classes.
+### YouTube search not working
+Update `yt-dlp` to the latest version:
+```bash
+pip install --upgrade yt-dlp
+```
 
-| Gesture | Action |
-|---------|--------|
-| Open palm | Play / Pause |
-| Closed fist | Stop |
-| Swipe left | Rewind 10s |
-| Swipe right | Forward 10s |
-| Thumb up / down | Volume up / down |
-| Pinch | Cycle playback speed |
+### Webcam not detected
+Check that your webcam is accessible:
+```bash
+ls /dev/video*
+```
 
 ---
 
-## License
+## 📄 License
 
-MIT
+MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+## 🙏 Acknowledgements
+
+- [VLC](https://www.videolan.org/) — Media playback
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — YouTube stream extraction
+- [MediaPipe](https://ai.google.dev/edge/mediapipe) — Hand landmark detection
+- [HaGRID](https://github.com/hukenovs/hagrid) — Hand gesture dataset
+- [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) — GUI framework
