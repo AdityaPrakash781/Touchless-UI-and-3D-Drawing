@@ -21,10 +21,11 @@ env/
 # Dataset (too large for git)
 /dataset/
 
-# Model files (can be regenerated)
+# Model files (can be regenerated / downloaded)
 gesture/landmarks_dataset.npz
 gesture/gesture_model.pkl
 gesture/gesture_scaler.pkl
+gesture/*.task
 
 # OS
 .DS_Store
