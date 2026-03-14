@@ -1,0 +1,67 @@
+GestureVLC — Gesture Classifier Training Report
+============================================================
+
+Best Model: MLP Neural Net
+Test Accuracy: 0.9403
+
+Classification Report:
+              precision    recall  f1-score   support
+
+        call       0.97      0.95      0.96        77
+     dislike       0.92      0.98      0.95        62
+        fist       0.97      0.97      0.97        61
+        four       0.93      0.99      0.96        89
+        like       0.93      0.96      0.94        69
+        mute       0.91      0.91      0.91        69
+          ok       1.00      0.98      0.99        92
+         one       0.93      0.92      0.93        77
+        palm       0.97      0.90      0.93        99
+       peace       0.90      0.86      0.88        84
+        rock       0.99      0.99      0.99        79
+        stop       0.91      0.98      0.94        93
+       three       0.95      0.95      0.95        84
+      two_up       0.88      0.85      0.87        87
+
+    accuracy                           0.94      1122
+   macro avg       0.94      0.94      0.94      1122
+weighted avg       0.94      0.94      0.94      1122
+
+
+Model Comparison:
+------------------------------------------------------------
+  Random Forest       : acc=0.9314, CV=0.9209±0.0061
+  Gradient Boosting   : acc=0.9314, CV=0.9178±0.0088
+  MLP Neural Net      : acc=0.9403, CV=0.9363±0.0030
+
+Confusion Matrix:
+[[73  1  0  0  3  0  0  0  0  0  0  0  0  0]
+ [ 0 61  1  0  0  0  0  0  0  0  0  0  0  0]
+ [ 0  0 59  0  0  0  0  1  0  0  0  0  0  1]
+ [ 0  0  0 88  0  0  0  0  1  0  0  0  0  0]
+ [ 1  1  0  0 66  0  0  0  0  0  0  1  0  0]
+ [ 1  2  0  0  0 63  0  2  0  0  0  0  0  1]
+ [ 0  0  0  1  0  0 90  0  0  0  0  1  0  0]
+ [ 0  0  0  0  0  3  0 71  0  0  0  1  0  2]
+ [ 0  1  0  1  0  1  0  0 89  0  1  6  0  0]
+ [ 0  0  0  1  1  1  0  0  0 72  0  0  3  6]
+ [ 0  0  1  0  0  0  0  0  0  0 78  0  0  0]
+ [ 0  0  0  0  0  0  0  0  2  0  0 91  0  0]
+ [ 0  0  0  4  0  0  0  0  0  0  0  0 80  0]
+ [ 0  0  0  0  1  1  0  2  0  8  0  0  1 74]]
+
+Gesture → Action Mapping:
+------------------------------------------------------------
+  palm                 → play_pause
+  fist                 → stop
+  like                 → volume_up
+  dislike              → volume_down
+  stop                 → pause
+  peace                → forward
+  ok                   → speed_cycle
+  one                  → forward_skip
+  mute                 → mute_toggle
+  call                 → none
+  rock                 → fullscreen
+  two_up               → rewind
+  three                → none
+  four                 → none
