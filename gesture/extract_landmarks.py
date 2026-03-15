@@ -29,7 +29,7 @@ from mediapipe.tasks.python.vision import (
 
 # ── Config ────────────────────────────────────────────────────────
 
-DATASET_ROOT = Path("/home/aditya/Documents/cv/dataset/hagrid-sample-120k-384p")
+DATASET_ROOT = Path(__file__).parent.parent / "dataset" / "hagrid-sample-120k-384p"
 IMAGE_DIR = DATASET_ROOT / "hagrid_120k"
 ANN_DIR = DATASET_ROOT / "ann_train_val"
 GESTURE_DIR = Path(__file__).parent

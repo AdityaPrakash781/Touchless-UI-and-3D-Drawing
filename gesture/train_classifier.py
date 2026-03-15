@@ -185,7 +185,7 @@ def train_model(X, y, class_names):
     conf_matrix = confusion_matrix(y_test, y_pred_best)
 
     # Save report
-    with open(REPORT_FILE, "w") as f:
+    with open(REPORT_FILE, "w", encoding="utf-8") as f:
         f.write("GestureVLC — Gesture Classifier Training Report\n")
         f.write("=" * 60 + "\n\n")
         f.write(f"Best Model: {best_name}\n")

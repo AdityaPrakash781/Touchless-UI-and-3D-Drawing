@@ -1,0 +1,16 @@
+{
+  "palm": "play_pause",
+  "fist": "stop",
+  "like": "volume_up",
+  "dislike": "volume_down",
+  "stop": "pause",
+  "peace": "forward",
+  "ok": "speed_cycle",
+  "one": "forward_skip",
+  "mute": "mute_toggle",
+  "call": "none",
+  "rock": "fullscreen",
+  "two_up": "rewind",
+  "three": "none",
+  "four": "none"
+}
