@@ -171,8 +171,8 @@ class MainWindow(QMainWindow):
 
         # ── Main content area (video + sidebar) ──
         content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(8, 8, 8, 4)
-        content_layout.setSpacing(8)
+        content_layout.setContentsMargins(16, 16, 16, 8)
+        content_layout.setSpacing(16)
 
         # Video frame
         self.video_frame = VideoFrame()
@@ -228,14 +228,14 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QTabWidget:
         """Build the sidebar tab widget with YouTube and Local tabs."""
         tabs = QTabWidget()
-        tabs.setMinimumWidth(320)
-        tabs.setMaximumWidth(420)
+        tabs.setMinimumWidth(380)
+        tabs.setMaximumWidth(480)
 
         # ── YouTube Tab ──
         yt_widget = QWidget()
         yt_layout = QVBoxLayout(yt_widget)
-        yt_layout.setContentsMargins(8, 12, 8, 8)
-        yt_layout.setSpacing(10)
+        yt_layout.setContentsMargins(16, 20, 16, 16)
+        yt_layout.setSpacing(14)
 
         # URL input
         url_label = QLabel("🔗  YouTube URL")
@@ -305,8 +305,8 @@ class MainWindow(QMainWindow):
         # ── Local Files Tab ──
         local_widget = QWidget()
         local_layout = QVBoxLayout(local_widget)
-        local_layout.setContentsMargins(8, 12, 8, 8)
-        local_layout.setSpacing(10)
+        local_layout.setContentsMargins(16, 20, 16, 16)
+        local_layout.setSpacing(14)
 
         open_label = QLabel("📁  Open Video File")
         open_label.setObjectName("titleLabel")
@@ -345,8 +345,8 @@ class MainWindow(QMainWindow):
         # ── Gesture Controls Tab ──
         gesture_widget = QWidget()
         gesture_layout = QVBoxLayout(gesture_widget)
-        gesture_layout.setContentsMargins(8, 12, 8, 8)
-        gesture_layout.setSpacing(8)
+        gesture_layout.setContentsMargins(16, 20, 16, 16)
+        gesture_layout.setSpacing(12)
 
         gesture_title = QLabel("🤚  Gesture Controls")
         gesture_title.setObjectName("titleLabel")
