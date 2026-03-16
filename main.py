@@ -17,12 +17,24 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ── Wayland fix ──────────────────────────────────────────────────
-# VLC's set_xwindow() requires an X11 window ID. On Wayland, PyQt6's
-# winId() returns a Wayland surface which VLC can't render to.
-# Force XCB (XWayland) so VLC embedding works on Wayland compositors.
+# VLC's set_xwindow() requires an X11 window ID. On Wayland:
+# 1. PyQt6's winId() returns a Wayland surface — force XCB so it
+#    gives us a real X11 window ID under XWayland.
+# 2. VLC 3.0.x independently checks WAYLAND_DISPLAY and uses its
+#    own Wayland plugin — bypassing set_xwindow() entirely.
+#    We MUST unset WAYLAND_DISPLAY so VLC falls back to X11.
 # This MUST happen before any Qt imports create a QApplication.
-if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
+_is_wayland = bool(
+    os.environ.get("WAYLAND_DISPLAY") or
+    os.environ.get("XDG_SESSION_TYPE") == "wayland"
+)
+if _is_wayland:
     os.environ["QT_QPA_PLATFORM"] = "xcb"
+    # Save and unset WAYLAND_DISPLAY so VLC doesn't try to use Wayland
+    _saved_wayland = os.environ.pop("WAYLAND_DISPLAY", None)
+    # Ensure DISPLAY is set for XWayland
+    if "DISPLAY" not in os.environ:
+        os.environ["DISPLAY"] = ":0"
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
