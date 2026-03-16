@@ -3,7 +3,7 @@
   "fist": "stop",
   "like": "volume_up",
   "dislike": "volume_down",
-  "stop": "pause",
+  "stop": "play_pause",
   "peace": "forward",
   "ok": "speed_cycle",
   "one": "forward_skip",
