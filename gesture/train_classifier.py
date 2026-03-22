@@ -66,7 +66,8 @@ def load_dataset():
     data = np.load(str(LANDMARKS_FILE), allow_pickle=True)
     X = data["X"]
     y = data["y"]
-    class_names = list(data["class_names"])
+    # Convert class_names to standard Python strings to avoid JSON/mapping issues
+    class_names = [str(name) for name in data["class_names"]]
 
     print(f"  Loaded dataset: {X.shape[0]} samples, {X.shape[1]} features")
     print(f"  Classes: {class_names}")
@@ -137,16 +138,17 @@ def train_model(X, y, class_names):
     for name, model in models.items():
         print(f"\n  🔄 Training {name}...")
 
-        # Use scaled data for MLP, raw for tree-based
+        # Use scaled data for MLP and Gradient Boosting, raw for Random Forest
         if "MLP" in name:
             model.fit(X_train_scaled, y_train)
             y_pred = model.predict(X_test_scaled)
-            # Cross-validation
-            cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5)
+            # Reduced CV folds for speed
+            cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=3)
         else:
+            # Tree-based models generally benefit from scaling less, but let's be consistent
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
-            cv_scores = cross_val_score(model, X_train, y_train, cv=5)
+            cv_scores = cross_val_score(model, X_train, y_train, cv=3)
 
         accuracy = accuracy_score(y_test, y_pred)
         report = classification_report(
@@ -232,7 +234,7 @@ def save_model(model, scaler, class_names, model_name):
         "class_names": class_names,
         "gesture_actions": GESTURE_ACTIONS,
         "class_to_action": {
-            name: GESTURE_ACTIONS.get(name, "none") for name in class_names
+            str(name): GESTURE_ACTIONS.get(str(name), "none") for name in class_names
         },
     }
     with open(CLASS_MAP_FILE, "w") as f:
