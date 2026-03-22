@@ -19,9 +19,9 @@ class VLCPlayer:
         # Create VLC instance with no video title show and quiet logging
         args = ["--no-video-title-show", "--quiet"]
         if sys.platform == "linux":
-            # Let VLC auto-detect the best video output
-            # On XWayland (forced via QT_QPA_PLATFORM=xcb), it will use xcb_x11
-            args.append("--aout=pulse")
+            # Force X11 video output (matching Qt's XCB/XWayland window)
+            # WAYLAND_DISPLAY is unset in main.py so VLC can't use Wayland
+            args.extend(["--vout=xcb_x11", "--aout=pulse"])
         self.instance = vlc.Instance(*args)
         self.media_player = self.instance.media_player_new()
         self._current_rate = 1.0
