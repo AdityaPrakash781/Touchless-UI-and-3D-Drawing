@@ -23,6 +23,7 @@ AVAILABLE_ACTIONS = {
     "speed_cycle":   "⚡  Cycle Speed",
     "mute_toggle":   "🔇  Mute / Unmute",
     "fullscreen":    "⛶  Fullscreen Toggle",
+    "draw":          "🖊️  Draw (3D)",
     "none":          "—  (No Action)",
 }
 
@@ -35,7 +36,7 @@ DEFAULT_MAPPING = {
     "stop":      "pause",
     "peace":     "forward",
     "ok":        "speed_cycle",
-    "one":       "forward_skip",
+    "one":       "draw",
     "mute":      "mute_toggle",
     "call":      "none",
     "rock":      "fullscreen",

@@ -7,6 +7,8 @@ YouTube search/URL integration, and local file browsing.
 
 import sys
 import os
+import time
+import json
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -22,6 +24,7 @@ from app.youtube import StreamExtractor, SearchWorker, search_youtube
 from app.controls import TransportBar
 from app.file_browser import pick_video_file, get_recent_files
 from app.styles import STYLESHEET, COLORS
+from app.drawing import DrawingCanvas
 from gesture.tracker import GestureTracker
 from gesture.settings import (
     load_gesture_mapping, save_gesture_mapping, reset_gesture_mapping,
@@ -152,6 +155,8 @@ class MainWindow(QMainWindow):
         self._gesture_tracker = None
         self._gesture_mapping = load_gesture_mapping()
         self._gesture_combos = {}  # gesture_name -> QComboBox
+        self._drawing_active = False
+        self._last_draw_time = 0
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -464,6 +469,50 @@ class MainWindow(QMainWindow):
 
         tabs.addTab(gesture_widget, "🤚  Gestures")
 
+        # ── 3D Drawing Tab ──
+        drawing_widget = QWidget()
+        drawing_layout = QVBoxLayout(drawing_widget)
+        drawing_layout.setContentsMargins(16, 20, 16, 16)
+        drawing_layout.setSpacing(12)
+
+        drawing_title = QLabel("🖊️  3D Spatial Drawing")
+        drawing_title.setObjectName("titleLabel")
+        drawing_layout.addWidget(drawing_title)
+
+        drawing_desc = QLabel(
+            "Point your index finger and move it in space to draw.\n"
+            "Depth (Z) is mapped to line thickness and opacity."
+        )
+        drawing_desc.setObjectName("secondaryLabel")
+        drawing_layout.addWidget(drawing_desc)
+
+        # Drawing Status Indicator
+        status_row = QHBoxLayout()
+        self.drawing_indicator = QLabel("🛑 Tracking Disabled")
+        self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: bold; font-size: 14px;")
+        status_row.addWidget(self.drawing_indicator)
+        
+        self.btn_draw_toggle_tracking = QPushButton("🤚 Start Tracking")
+        self.btn_draw_toggle_tracking.setFixedWidth(150)
+        self.btn_draw_toggle_tracking.clicked.connect(self._toggle_gesture_tracking)
+        status_row.addWidget(self.btn_draw_toggle_tracking, alignment=Qt.AlignmentFlag.AlignRight)
+        
+        drawing_layout.addLayout(status_row)
+
+        # The Canvas
+        self.canvas = DrawingCanvas()
+        drawing_layout.addWidget(self.canvas, stretch=1)
+
+        # Controls
+        draw_btn_row = QHBoxLayout()
+        self.btn_clear_canvas = QPushButton("🗑️  Clear Canvas")
+        self.btn_clear_canvas.clicked.connect(self.canvas.clear)
+        draw_btn_row.addWidget(self.btn_clear_canvas)
+        
+        drawing_layout.addLayout(draw_btn_row)
+
+        tabs.addTab(drawing_widget, "🖊️  3D Drawing")
+
         # Populate recent files
         self._refresh_recent_files()
 
@@ -756,13 +805,20 @@ class MainWindow(QMainWindow):
             self._gesture_tracker.wait(2000)
             self._gesture_tracker = None
             self.btn_gesture_toggle.setText("🤚  Start Gesture Control")
+            self.btn_draw_toggle_tracking.setText("🤚 Start Tracking")
             self.gesture_status.setText("Status: Inactive")
+            self.drawing_indicator.setText("🛑 Tracking Disabled")
+            self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: bold; font-size: 14px;")
             self.status_bar.showMessage("Gesture tracking stopped")
         else:
             # Save current dropdown selections before starting
             self._save_gesture_mapping()
             self._gesture_tracker = GestureTracker(camera_index=0)
             self._gesture_tracker.gesture_detected.connect(self._on_gesture_detected)
+            self._gesture_tracker.finger_moved.connect(self._on_finger_moved)
+            self._gesture_tracker.hand_lost.connect(lambda: self._set_drawing_active(False))
+            self._gesture_tracker.hand_found.connect(lambda: self._set_drawing_active(False))
+            print("DEBUG: Gesture signals connected")
             self._gesture_tracker.status_changed.connect(
                 lambda msg: self.gesture_status.setText(f"Status: {msg}")
             )
@@ -771,11 +827,13 @@ class MainWindow(QMainWindow):
             )
             self._gesture_tracker.start()
             self.btn_gesture_toggle.setText("⏹  Stop Gesture Control")
-            self.gesture_status.setText("Status: Starting...")
+            self.btn_draw_toggle_tracking.setText("⏹ Stop Tracking")
+            self.drawing_indicator.setStyleSheet("color: #d29922; font-weight: bold; font-size: 14px;")
             self.status_bar.showMessage("Gesture tracking started")
 
     def _on_gesture_detected(self, gesture: str, action: str, confidence: float):
         """Handle a detected gesture by performing the mapped action."""
+        print(f"DEBUG: Gesture detected: {gesture} -> {action} ({confidence:.2f})")
         # Use the USER's custom mapping, not the tracker's built-in one
         custom_action = self._gesture_mapping.get(gesture, action)
 
@@ -800,11 +858,54 @@ class MainWindow(QMainWindow):
             "speed_cycle": lambda: self.player.cycle_speed(forward=True),
             "mute_toggle": self._on_mute,
             "fullscreen": self._toggle_fullscreen,
+            "draw": self._toggle_drawing_mode,
         }
 
         handler = action_map.get(custom_action)
         if handler:
             handler()
+        
+        # If the gesture was NOT 'one' (or whatever maps to 'draw'), stop drawing
+        if custom_action != "draw":
+            self._set_drawing_active(False)
+
+    def _toggle_drawing_mode(self):
+        """Action handler for the 'draw' action."""
+        self._last_draw_time = time.time()
+        self._set_drawing_active(True)
+
+    def _set_drawing_active(self, active: bool):
+        """Update drawing state and notify canvas."""
+        if self._drawing_active == active:
+            return
+        self._drawing_active = active
+        self.canvas.set_drawing(active)
+        if active:
+            self.drawing_indicator.setText("🔵 DRAWING ACTIVE")
+            self.drawing_indicator.setStyleSheet("color: #58a6ff; font-weight: bold; font-size: 14px;")
+            self.status_bar.showMessage("🖊️ Drawing Active...")
+        else:
+            # Only show 'Ready' if the tracker is actually running
+            if self._gesture_tracker and self._gesture_tracker.isRunning():
+                self.drawing_indicator.setText("🟢 Ready (Show 'One' Gesture)")
+                self.drawing_indicator.setStyleSheet("color: #3fb950; font-weight: bold; font-size: 14px;")
+            else:
+                self.drawing_indicator.setText("🛑 Tracking Disabled")
+                self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: bold; font-size: 14px;")
+
+    def _on_finger_moved(self, x: float, y: float, z: float):
+        """Handle smoothed finger movement from tracker."""
+        # Auto-timeout for drawing mode if no 'draw' gesture received for a while
+        if self._drawing_active:
+            if time.time() - self._last_draw_time > 1.5:
+                self._set_drawing_active(False)
+            
+            # Throttled debug for movement
+            if not hasattr(self, "_last_move_log") or time.time() - self._last_move_log > 0.5:
+                print(f"DEBUG: Smooth Finger -> x:{x:.2f}, y:{y:.2f}, z:{z:.2f}")
+                self._last_move_log = time.time()
+            
+        self.canvas.add_point(x, y, z)
 
     def _on_gesture_error(self, error_msg: str):
         """Handle gesture tracking errors."""
