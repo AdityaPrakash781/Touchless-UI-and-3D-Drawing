@@ -25,7 +25,8 @@ from app.youtube import StreamExtractor, SearchWorker, search_youtube
 from app.controls import TransportBar
 from app.file_browser import pick_video_file, get_recent_files
 from app.styles import STYLESHEET, COLORS
-from app.drawing import DrawingCanvas
+from app.drawing import DrawingCanvas, FullscreenDrawingWindow
+from app.popout_windows import HandPreviewWindow, PictureInPictureWindow
 from gesture.tracker import GestureTracker
 from gesture.settings import (
     load_gesture_mapping, save_gesture_mapping, reset_gesture_mapping,
@@ -159,6 +160,11 @@ class MainWindow(QMainWindow):
         self._drawing_active = False
         self._last_draw_time = 0
 
+        # New feature windows
+        self._pip_window = None
+        self._hand_preview = None
+        self._fullscreen_draw = None
+
         self._setup_ui()
         self._setup_shortcuts()
         self._start_update_timer()
@@ -192,6 +198,36 @@ class MainWindow(QMainWindow):
         self.now_playing.setObjectName("nowPlaying")
         self.now_playing.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header_layout.addWidget(self.now_playing)
+
+        # Hand preview toggle button in header
+        self.btn_hand_preview = QPushButton("Hand Preview")
+        self.btn_hand_preview.setCheckable(True)
+        self.btn_hand_preview.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid {COLORS['border_visible']};
+                border-radius: 8px; color: {COLORS['text_secondary']};
+                padding: 4px 12px; font-size: 11px; font-weight: 600;
+            }}
+            QPushButton:hover {{ border-color: {COLORS['accent']}; color: {COLORS['text_accent']}; }}
+            QPushButton:checked {{ background: {COLORS['accent']}; color: #2b1700; border-color: {COLORS['accent']}; }}
+        """)
+        self.btn_hand_preview.toggled.connect(self._toggle_hand_preview)
+        header_layout.addWidget(self.btn_hand_preview)
+
+        # PiP toggle button in header
+        self.btn_pip = QPushButton("PiP")
+        self.btn_pip.setCheckable(True)
+        self.btn_pip.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid {COLORS['border_visible']};
+                border-radius: 8px; color: {COLORS['text_secondary']};
+                padding: 4px 12px; font-size: 11px; font-weight: 600;
+            }}
+            QPushButton:hover {{ border-color: {COLORS['accent']}; color: {COLORS['text_accent']}; }}
+            QPushButton:checked {{ background: {COLORS['accent']}; color: #2b1700; border-color: {COLORS['accent']}; }}
+        """)
+        self.btn_pip.toggled.connect(self._toggle_pip)
+        header_layout.addWidget(self.btn_pip)
 
         root_layout.addWidget(header)
 
@@ -519,10 +555,26 @@ class MainWindow(QMainWindow):
 
         # Controls
         draw_btn_row = QHBoxLayout()
-        self.btn_clear_canvas = QPushButton("Clear Canvas")
+        draw_btn_row.setSpacing(8)
+
+        self.btn_clear_canvas = QPushButton("Clear")
         self.btn_clear_canvas.clicked.connect(self.canvas.clear)
         draw_btn_row.addWidget(self.btn_clear_canvas)
-        
+
+        self.btn_undo_canvas = QPushButton("Undo")
+        self.btn_undo_canvas.clicked.connect(self.canvas.undo)
+        draw_btn_row.addWidget(self.btn_undo_canvas)
+
+        self.btn_move_mode = QPushButton("Move")
+        self.btn_move_mode.setCheckable(True)
+        self.btn_move_mode.toggled.connect(self.canvas.set_move_mode)
+        draw_btn_row.addWidget(self.btn_move_mode)
+
+        self.btn_fullscreen_draw = QPushButton("Fullscreen")
+        self.btn_fullscreen_draw.setObjectName("accentButton")
+        self.btn_fullscreen_draw.clicked.connect(self._open_fullscreen_drawing)
+        draw_btn_row.addWidget(self.btn_fullscreen_draw)
+
         drawing_layout.addLayout(draw_btn_row)
 
         tabs.addTab(drawing_widget, "3D DRAW")
@@ -835,13 +887,16 @@ class MainWindow(QMainWindow):
             self._gesture_tracker.finger_moved.connect(self._on_finger_moved)
             self._gesture_tracker.hand_lost.connect(lambda: self._set_drawing_active(False))
             self._gesture_tracker.hand_found.connect(lambda: self._set_drawing_active(False))
-            print("DEBUG: Gesture signals connected")
             self._gesture_tracker.status_changed.connect(
                 lambda msg: self.gesture_status.setText(f"Status: {msg}")
             )
             self._gesture_tracker.error.connect(
                 lambda msg: self._on_gesture_error(msg)
             )
+            # Connect frame_ready for hand preview if open
+            self._gesture_tracker.frame_ready.connect(self._on_tracker_frame)
+            if self._hand_preview and self._hand_preview.isVisible():
+                self._gesture_tracker.set_emit_frames(True)
             self._gesture_tracker.start()
             self.btn_gesture_toggle.setText("Stop Gesture Control")
             self.btn_draw_toggle_tracking.setText("Stop Tracking")
@@ -912,32 +967,135 @@ class MainWindow(QMainWindow):
 
     def _on_finger_moved(self, x: float, y: float, z: float):
         """Handle smoothed finger movement from tracker."""
-        # Auto-timeout for drawing mode if no 'draw' gesture received for a while
         if self._drawing_active:
             if time.time() - self._last_draw_time > 1.5:
                 self._set_drawing_active(False)
-            
-            # Throttled debug for movement
-            if not hasattr(self, "_last_move_log") or time.time() - self._last_move_log > 0.5:
-                print(f"DEBUG: Smooth Finger -> x:{x:.2f}, y:{y:.2f}, z:{z:.2f}")
-                self._last_move_log = time.time()
-            
+
+        # Send to main canvas
         self.canvas.add_point(x, y, z)
+
+        # Also send to fullscreen canvas if open
+        if self._fullscreen_draw and self._fullscreen_draw.isVisible():
+            self._fullscreen_draw.canvas.add_point(x, y, z)
 
     def _on_gesture_error(self, error_msg: str):
         """Handle gesture tracking errors."""
         self.gesture_status.setText(f"Status: Error")
         self.status_bar.showMessage(f"Gesture error: {error_msg}")
-        self.btn_gesture_toggle.setText("🤚  Start Gesture Control")
+        self.btn_gesture_toggle.setText("Start Gesture Control")
         QMessageBox.warning(self, "Gesture Error", error_msg)
+
+    # ── Hand Preview Window ──────────────────────────────────────────
+
+    def _toggle_hand_preview(self, checked: bool):
+        """Open or close the hand tracking preview window."""
+        if checked:
+            self._hand_preview = HandPreviewWindow()
+            self._hand_preview.closed.connect(lambda: self.btn_hand_preview.setChecked(False))
+            self._hand_preview.show()
+            if self._gesture_tracker and self._gesture_tracker.isRunning():
+                self._gesture_tracker.set_emit_frames(True)
+            self.status_bar.showMessage("Hand tracking preview opened")
+        else:
+            if self._hand_preview:
+                self._hand_preview.close()
+                self._hand_preview = None
+            if self._gesture_tracker:
+                self._gesture_tracker.set_emit_frames(False)
+            self.status_bar.showMessage("Hand tracking preview closed")
+
+    def _on_tracker_frame(self, q_image):
+        """Forward annotated webcam frame to the hand preview window."""
+        if self._hand_preview and self._hand_preview.isVisible():
+            self._hand_preview.set_frame(q_image)
+
+    # ── Picture-in-Picture Window ────────────────────────────────────
+
+    def _toggle_pip(self, checked: bool):
+        """Open or close the PiP video window."""
+        if checked:
+            self._pip_window = PictureInPictureWindow()
+            self._pip_window.closed.connect(self._on_pip_closed)
+            self._pip_window.play_pause.connect(self._on_play_pause)
+            self._pip_window.seek_relative.connect(lambda ms: self.player.seek_relative(ms))
+            self._pip_window.volume_changed.connect(self.player.set_volume)
+            self._pip_window.show()
+
+            # Re-embed VLC output into PiP video frame
+            QTimer.singleShot(100, self._embed_vlc_in_pip)
+
+            # Start PiP update timer
+            self._pip_timer = QTimer(self)
+            self._pip_timer.setInterval(250)
+            self._pip_timer.timeout.connect(self._update_pip)
+            self._pip_timer.start()
+
+            self.status_bar.showMessage("Picture-in-Picture enabled")
+        else:
+            self._close_pip()
+
+    def _embed_vlc_in_pip(self):
+        """Move VLC output to the PiP window."""
+        if self._pip_window:
+            QApplication.processEvents()
+            pip_wid = int(self._pip_window.video_frame.winId())
+            self.player.set_window(pip_wid)
+
+    def _update_pip(self):
+        """Sync PiP transport state with VLC."""
+        if self._pip_window:
+            self._pip_window.update_state(
+                self.player.is_playing(),
+                self.player.get_time(),
+                self.player.get_duration(),
+            )
+
+    def _on_pip_closed(self):
+        """Restore VLC output to main window when PiP closes."""
+        self._close_pip()
+        self.btn_pip.blockSignals(True)
+        self.btn_pip.setChecked(False)
+        self.btn_pip.blockSignals(False)
+
+    def _close_pip(self):
+        """Close PiP and restore VLC to main frame."""
+        if hasattr(self, '_pip_timer') and self._pip_timer:
+            self._pip_timer.stop()
+            self._pip_timer = None
+        if self._pip_window:
+            self._pip_window.close()
+            self._pip_window = None
+        # Re-embed VLC in main video frame
+        QTimer.singleShot(100, self._embed_vlc)
+        self.status_bar.showMessage("Video restored to main window")
+
+    # ── Fullscreen Drawing ───────────────────────────────────────────
+
+    def _open_fullscreen_drawing(self):
+        """Open the fullscreen drawing overlay."""
+        self._fullscreen_draw = FullscreenDrawingWindow(self.canvas)
+        self._fullscreen_draw.closed.connect(self._on_fullscreen_draw_closed)
+        self._fullscreen_draw.show()
+        self.status_bar.showMessage("Fullscreen drawing mode")
+
+    def _on_fullscreen_draw_closed(self):
+        """Sync paths back from fullscreen canvas."""
+        self._fullscreen_draw = None
+        self.status_bar.showMessage("Fullscreen drawing closed")
 
     # ── Cleanup ──────────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        """Clean up VLC and gesture resources on window close."""
+        """Clean up VLC, gesture, PiP, and preview resources on window close."""
         self.update_timer.stop()
         if self._gesture_tracker and self._gesture_tracker.isRunning():
             self._gesture_tracker.stop()
             self._gesture_tracker.wait(2000)
+        if self._pip_window:
+            self._close_pip()
+        if self._hand_preview:
+            self._hand_preview.close()
+        if self._fullscreen_draw:
+            self._fullscreen_draw.close()
         self.player.release()
         super().closeEvent(event)
