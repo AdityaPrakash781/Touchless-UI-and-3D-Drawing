@@ -1,0 +1,50 @@
+{
+  "class_names": [
+    "call",
+    "dislike",
+    "fist",
+    "four",
+    "like",
+    "mute",
+    "ok",
+    "one",
+    "palm",
+    "peace",
+    "rock",
+    "stop",
+    "three",
+    "two_up"
+  ],
+  "gesture_actions": {
+    "palm": "play_pause",
+    "fist": "stop",
+    "like": "volume_up",
+    "dislike": "volume_down",
+    "stop": "pause",
+    "peace": "forward",
+    "ok": "speed_cycle",
+    "one": "forward_skip",
+    "mute": "mute_toggle",
+    "call": "none",
+    "rock": "fullscreen",
+    "two_up": "rewind",
+    "three": "none",
+    "four": "none"
+  },
+  "class_to_action": {
+    "call": "none",
+    "dislike": "volume_down",
+    "fist": "stop",
+    "four": "none",
+    "like": "volume_up",
+    "mute": "mute_toggle",
+    "ok": "speed_cycle",
+    "one": "forward_skip",
+    "palm": "play_pause",
+    "peace": "forward",
+    "rock": "fullscreen",
+    "stop": "pause",
+    "three": "none",
+    "two_up": "rewind"
+  }
+}

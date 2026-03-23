@@ -1,0 +1,65 @@
+GestureVLC — Gesture Classifier Training Report
+============================================================
+
+Best Model: Random Forest
+Test Accuracy: 0.9323
+
+Classification Report:
+              precision    recall  f1-score   support
+
+        call       0.96      0.95      0.95        77
+     dislike       0.95      0.98      0.97        62
+        fist       0.95      0.98      0.97        61
+        four       0.91      0.97      0.94        89
+        like       0.94      0.94      0.94        69
+        mute       0.94      0.91      0.93        69
+          ok       0.99      0.96      0.97        92
+         one       0.91      0.92      0.92        77
+        palm       0.91      0.87      0.89        99
+       peace       0.90      0.89      0.90        84
+        rock       0.99      0.99      0.99        79
+        stop       0.87      0.92      0.90        93
+       three       0.99      0.94      0.96        84
+      two_up       0.87      0.86      0.87        87
+
+    accuracy                           0.93      1122
+   macro avg       0.93      0.94      0.93      1122
+weighted avg       0.93      0.93      0.93      1122
+
+
+Model Comparison:
+------------------------------------------------------------
+  Random Forest       : acc=0.9323, CV=0.9193±0.0061
+
+Confusion Matrix:
+[[73  1  0  0  3  0  0  0  0  0  0  0  0  0]
+ [ 0 61  0  0  1  0  0  0  0  0  0  0  0  0]
+ [ 0  0 60  0  0  0  0  1  0  0  0  0  0  0]
+ [ 0  0  0 86  0  0  0  0  2  0  0  1  0  0]
+ [ 2  1  0  0 65  0  0  0  0  0  0  1  0  0]
+ [ 1  1  0  0  0 63  0  2  0  0  0  0  0  2]
+ [ 0  0  0  2  0  0 88  0  0  0  0  2  0  0]
+ [ 0  0  2  0  0  3  0 71  0  0  0  0  0  1]
+ [ 0  0  0  1  0  0  1  1 86  0  1  8  1  0]
+ [ 0  0  0  0  0  1  0  0  0 75  0  0  0  8]
+ [ 0  0  1  0  0  0  0  0  0  0 78  0  0  0]
+ [ 0  0  0  0  0  0  0  0  7  0  0 86  0  0]
+ [ 0  0  0  5  0  0  0  0  0  0  0  0 79  0]
+ [ 0  0  0  0  0  0  0  3  0  8  0  1  0 75]]
+
+Gesture → Action Mapping:
+------------------------------------------------------------
+  palm                 → play_pause
+  fist                 → stop
+  like                 → volume_up
+  dislike              → volume_down
+  stop                 → pause
+  peace                → forward
+  ok                   → speed_cycle
+  one                  → forward_skip
+  mute                 → mute_toggle
+  call                 → none
+  rock                 → fullscreen
+  two_up               → rewind
+  three                → none
+  four                 → none

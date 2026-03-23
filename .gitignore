@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dataset (too large for git)
+/dataset/
+
+# Model files (downloaded, not committed)
+gesture/landmarks_dataset.npz
+gesture/*.task
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
