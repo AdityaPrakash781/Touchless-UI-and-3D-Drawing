@@ -7,6 +7,7 @@ playback inside a PyQt6 widget.
 
 import sys
 import vlc
+from pathlib import Path
 
 
 class VLCPlayer:
@@ -125,6 +126,14 @@ class VLCPlayer:
         d = self.media_player.get_length()
         return max(0, d)
 
+    def set_time(self, ms: int):
+        """Seek to an absolute time in milliseconds."""
+        self.media_player.set_time(max(0, int(ms)))
+
+    def has_media(self) -> bool:
+        """Return True if a media object is attached."""
+        return self.media_player.get_media() is not None
+
     # ── Volume ───────────────────────────────────────────────────────
 
     def set_volume(self, percent: int):
@@ -181,6 +190,60 @@ class VLCPlayer:
     def _apply_rate(self):
         """Apply the stored rate to the media player."""
         self.media_player.set_rate(self._current_rate)
+
+    # ── Video Features ──────────────────────────────────────────────
+
+    def take_snapshot(self, output_path: str) -> bool:
+        """Save a snapshot of the current frame to output_path."""
+        out = str(Path(output_path))
+        result = self.media_player.video_take_snapshot(0, out, 0, 0)
+        return result == 0
+
+    def set_aspect_ratio(self, ratio: str | None):
+        """Set video aspect ratio. Use None or '' for default."""
+        value = ratio if ratio else None
+        self.media_player.video_set_aspect_ratio(value)
+
+    def set_crop(self, crop: str | None):
+        """Set crop geometry string (example: '16:9'), or None to reset."""
+        value = crop if crop else None
+        self.media_player.video_set_crop_geometry(value)
+
+    # ── Tracks & Subtitles ──────────────────────────────────────────
+
+    def get_audio_tracks(self) -> list[tuple[int, str]]:
+        """Return available audio tracks as (id, label)."""
+        tracks = self.media_player.audio_get_track_description() or []
+        out = []
+        for t in tracks:
+            name = t.name.decode("utf-8", errors="replace") if isinstance(t.name, bytes) else str(t.name)
+            out.append((int(t.id), name))
+        return out
+
+    def get_current_audio_track(self) -> int:
+        """Return current audio track id."""
+        return int(self.media_player.audio_get_track())
+
+    def set_audio_track(self, track_id: int):
+        """Switch to a specific audio track id."""
+        self.media_player.audio_set_track(int(track_id))
+
+    def get_subtitle_tracks(self) -> list[tuple[int, str]]:
+        """Return subtitle/SPU tracks as (id, label)."""
+        tracks = self.media_player.video_get_spu_description() or []
+        out = []
+        for t in tracks:
+            name = t.name.decode("utf-8", errors="replace") if isinstance(t.name, bytes) else str(t.name)
+            out.append((int(t.id), name))
+        return out
+
+    def get_current_subtitle_track(self) -> int:
+        """Return current subtitle track id."""
+        return int(self.media_player.video_get_spu())
+
+    def set_subtitle_track(self, track_id: int):
+        """Switch to a specific subtitle track id."""
+        self.media_player.video_set_spu(int(track_id))
 
     # ── Fullscreen ───────────────────────────────────────────────────
 

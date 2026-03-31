@@ -12,16 +12,19 @@ import sys
 import os
 import time
 import json
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLineEdit, QPushButton, QLabel,
     QFrame, QScrollArea, QSizePolicy, QStatusBar,
-    QApplication, QMessageBox, QComboBox, QGridLayout
+    QApplication, QMessageBox, QComboBox, QGridLayout,
+    QFileDialog, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
-from PyQt6.QtGui import QKeySequence, QShortcut, QFont, QIcon
+from PyQt6.QtGui import QKeySequence, QShortcut, QFont, QIcon, QAction, QActionGroup
 
+import vlc
 from app.vlc_player import VLCPlayer
 from app.youtube import StreamExtractor, SearchWorker, search_youtube
 from app.controls import TransportBar
@@ -174,6 +177,8 @@ class MainWindow(QMainWindow):
         self._closing_pip = False
         self._hand_preview = None
         self._fullscreen_draw = None
+        self._loop_current = False
+        self._always_on_top = False
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -275,6 +280,8 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready — Open a file or paste a YouTube link")
+
+        self._setup_menu_bar()
 
         # Embed VLC into the video frame
         # Use a longer delay to ensure the window is fully mapped on XWayland
@@ -641,6 +648,310 @@ class MainWindow(QMainWindow):
 
         return tabs
 
+    # ── Menu Bar ─────────────────────────────────────────────────────
+
+    def _setup_menu_bar(self):
+        """Build VLC-style top menus for media, playback, audio, video, and tools."""
+        menubar = self.menuBar()
+
+        # Media
+        media_menu = menubar.addMenu("Media")
+
+        action_open_file = QAction("Open File...", self)
+        action_open_file.setShortcut("Ctrl+O")
+        action_open_file.triggered.connect(self._open_local_file)
+        media_menu.addAction(action_open_file)
+
+        action_open_url = QAction("Open Network Stream...", self)
+        action_open_url.setShortcut("Ctrl+L")
+        action_open_url.triggered.connect(self._open_network_url_dialog)
+        media_menu.addAction(action_open_url)
+
+        media_menu.addSeparator()
+
+        action_snapshot = QAction("Take Snapshot...", self)
+        action_snapshot.setShortcut("Shift+S")
+        action_snapshot.triggered.connect(self._save_snapshot)
+        media_menu.addAction(action_snapshot)
+
+        media_menu.addSeparator()
+
+        action_quit = QAction("Quit", self)
+        action_quit.setShortcut("Ctrl+Q")
+        action_quit.triggered.connect(self.close)
+        media_menu.addAction(action_quit)
+
+        # Playback
+        playback_menu = menubar.addMenu("Playback")
+
+        action_play_pause = QAction("Play/Pause", self)
+        action_play_pause.setShortcut("Space")
+        action_play_pause.triggered.connect(self._on_play_pause)
+        playback_menu.addAction(action_play_pause)
+
+        action_stop = QAction("Stop", self)
+        action_stop.setShortcut("S")
+        action_stop.triggered.connect(self._on_stop)
+        playback_menu.addAction(action_stop)
+
+        playback_menu.addSeparator()
+
+        action_back_10 = QAction("Jump Backward 10s", self)
+        action_back_10.setShortcut("Left")
+        action_back_10.triggered.connect(lambda: self.player.seek_relative(-10000))
+        playback_menu.addAction(action_back_10)
+
+        action_fwd_10 = QAction("Jump Forward 10s", self)
+        action_fwd_10.setShortcut("Right")
+        action_fwd_10.triggered.connect(lambda: self.player.seek_relative(10000))
+        playback_menu.addAction(action_fwd_10)
+
+        action_back_30 = QAction("Jump Backward 30s", self)
+        action_back_30.setShortcut("Shift+Left")
+        action_back_30.triggered.connect(lambda: self.player.seek_relative(-30000))
+        playback_menu.addAction(action_back_30)
+
+        action_fwd_30 = QAction("Jump Forward 30s", self)
+        action_fwd_30.setShortcut("Shift+Right")
+        action_fwd_30.triggered.connect(lambda: self.player.seek_relative(30000))
+        playback_menu.addAction(action_fwd_30)
+
+        playback_menu.addSeparator()
+
+        action_speed_up = QAction("Faster", self)
+        action_speed_up.setShortcut("]")
+        action_speed_up.triggered.connect(lambda: self.player.cycle_speed(forward=True))
+        playback_menu.addAction(action_speed_up)
+
+        action_speed_down = QAction("Slower", self)
+        action_speed_down.setShortcut("[")
+        action_speed_down.triggered.connect(lambda: self.player.cycle_speed(forward=False))
+        playback_menu.addAction(action_speed_down)
+
+        action_speed_normal = QAction("Normal Speed", self)
+        action_speed_normal.setShortcut("=")
+        action_speed_normal.triggered.connect(lambda: self.player.set_rate(1.0))
+        playback_menu.addAction(action_speed_normal)
+
+        playback_menu.addSeparator()
+
+        action_loop_current = QAction("Loop Current Media", self)
+        action_loop_current.setCheckable(True)
+        action_loop_current.toggled.connect(self._toggle_loop_current)
+        playback_menu.addAction(action_loop_current)
+
+        # Audio
+        audio_menu = menubar.addMenu("Audio")
+
+        action_mute = QAction("Mute", self)
+        action_mute.setShortcut("M")
+        action_mute.triggered.connect(self._on_mute)
+        audio_menu.addAction(action_mute)
+
+        action_vol_up = QAction("Volume Up", self)
+        action_vol_up.setShortcut("Up")
+        action_vol_up.triggered.connect(lambda: self._adjust_volume(5))
+        audio_menu.addAction(action_vol_up)
+
+        action_vol_down = QAction("Volume Down", self)
+        action_vol_down.setShortcut("Down")
+        action_vol_down.triggered.connect(lambda: self._adjust_volume(-5))
+        audio_menu.addAction(action_vol_down)
+
+        audio_menu.addSeparator()
+        self.audio_tracks_menu = audio_menu.addMenu("Audio Track")
+        self.audio_tracks_menu.aboutToShow.connect(self._populate_audio_tracks_menu)
+
+        # Video
+        video_menu = menubar.addMenu("Video")
+
+        action_fullscreen = QAction("Fullscreen", self)
+        action_fullscreen.setShortcut("F")
+        action_fullscreen.triggered.connect(self._toggle_fullscreen)
+        video_menu.addAction(action_fullscreen)
+
+        aspect_menu = video_menu.addMenu("Aspect Ratio")
+        aspect_group = QActionGroup(self)
+        aspect_group.setExclusive(True)
+        aspect_options = [
+            ("Default", ""),
+            ("16:9", "16:9"),
+            ("4:3", "4:3"),
+            ("1:1", "1:1"),
+            ("21:9", "21:9"),
+        ]
+        for label, ratio in aspect_options:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            if ratio == "":
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, r=ratio, l=label: self._set_aspect_ratio(r, l))
+            aspect_group.addAction(action)
+            aspect_menu.addAction(action)
+
+        crop_menu = video_menu.addMenu("Crop")
+        crop_group = QActionGroup(self)
+        crop_group.setExclusive(True)
+        crop_options = [
+            ("None", ""),
+            ("16:9", "16:9"),
+            ("4:3", "4:3"),
+            ("1:1", "1:1"),
+            ("21:9", "21:9"),
+        ]
+        for label, crop in crop_options:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            if crop == "":
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, c=crop, l=label: self._set_crop(c, l))
+            crop_group.addAction(action)
+            crop_menu.addAction(action)
+
+        video_menu.addSeparator()
+        self.subtitle_tracks_menu = video_menu.addMenu("Subtitle Track")
+        self.subtitle_tracks_menu.aboutToShow.connect(self._populate_subtitle_tracks_menu)
+
+        # View
+        view_menu = menubar.addMenu("View")
+
+        action_pip = QAction("Picture-in-Picture", self)
+        action_pip.setCheckable(True)
+        action_pip.toggled.connect(lambda checked: self.btn_pip.setChecked(checked))
+        self.btn_pip.toggled.connect(action_pip.setChecked)
+        view_menu.addAction(action_pip)
+
+        action_hand_preview = QAction("Hand Preview", self)
+        action_hand_preview.setCheckable(True)
+        action_hand_preview.toggled.connect(lambda checked: self.btn_hand_preview.setChecked(checked))
+        self.btn_hand_preview.toggled.connect(action_hand_preview.setChecked)
+        view_menu.addAction(action_hand_preview)
+
+        action_always_on_top = QAction("Always On Top", self)
+        action_always_on_top.setCheckable(True)
+        action_always_on_top.toggled.connect(self._toggle_always_on_top)
+        view_menu.addAction(action_always_on_top)
+
+        # Tools
+        tools_menu = menubar.addMenu("Tools")
+
+        action_media_info = QAction("Media Information", self)
+        action_media_info.triggered.connect(self._show_media_info)
+        tools_menu.addAction(action_media_info)
+
+    def _open_network_url_dialog(self):
+        """Prompt for a URL and play it directly in VLC."""
+        url, ok = QInputDialog.getText(self, "Open Network Stream", "Enter media URL:")
+        if not ok:
+            return
+        url = url.strip()
+        if not url:
+            return
+        self.player.play(url)
+        self.now_playing.setText(f"▶ {url}")
+        self.status_bar.showMessage("Playing network stream")
+
+    def _save_snapshot(self):
+        """Save a frame snapshot to an image file."""
+        if not self.player.has_media():
+            self.status_bar.showMessage("No media loaded for snapshot")
+            return
+
+        default_name = f"vlc_snapshot_{int(time.time())}.png"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Snapshot",
+            str(Path.home() / default_name),
+            "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)",
+        )
+        if not path:
+            return
+
+        ok = self.player.take_snapshot(path)
+        if ok:
+            self.status_bar.showMessage(f"Snapshot saved: {path}")
+        else:
+            self.status_bar.showMessage("Snapshot failed")
+
+    def _toggle_loop_current(self, enabled: bool):
+        """Toggle looping for the currently loaded media item."""
+        self._loop_current = enabled
+        self.status_bar.showMessage("Loop current media: ON" if enabled else "Loop current media: OFF")
+
+    def _set_aspect_ratio(self, ratio: str, label: str):
+        """Apply selected aspect ratio."""
+        self.player.set_aspect_ratio(ratio)
+        self.status_bar.showMessage(f"Aspect ratio: {label}")
+
+    def _set_crop(self, crop: str, label: str):
+        """Apply selected crop mode."""
+        self.player.set_crop(crop)
+        self.status_bar.showMessage(f"Crop: {label}")
+
+    def _populate_audio_tracks_menu(self):
+        """Rebuild audio tracks submenu based on current media."""
+        self.audio_tracks_menu.clear()
+        tracks = self.player.get_audio_tracks()
+        if not tracks:
+            action = QAction("No audio tracks", self)
+            action.setEnabled(False)
+            self.audio_tracks_menu.addAction(action)
+            return
+
+        current = self.player.get_current_audio_track()
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for track_id, label in tracks:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(track_id == current)
+            action.triggered.connect(lambda checked, tid=track_id: self.player.set_audio_track(tid))
+            group.addAction(action)
+            self.audio_tracks_menu.addAction(action)
+
+    def _populate_subtitle_tracks_menu(self):
+        """Rebuild subtitle tracks submenu based on current media."""
+        self.subtitle_tracks_menu.clear()
+        tracks = self.player.get_subtitle_tracks()
+        if not tracks:
+            action = QAction("No subtitle tracks", self)
+            action.setEnabled(False)
+            self.subtitle_tracks_menu.addAction(action)
+            return
+
+        current = self.player.get_current_subtitle_track()
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for track_id, label in tracks:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(track_id == current)
+            action.triggered.connect(lambda checked, tid=track_id: self.player.set_subtitle_track(tid))
+            group.addAction(action)
+            self.subtitle_tracks_menu.addAction(action)
+
+    def _toggle_always_on_top(self, enabled: bool):
+        """Toggle top-most window mode."""
+        self._always_on_top = enabled
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        self.show()
+        self.status_bar.showMessage("Always on top: ON" if enabled else "Always on top: OFF")
+
+    def _show_media_info(self):
+        """Show current media playback diagnostics."""
+        state = self.player.media_player.get_state()
+        state_name = state.name if hasattr(state, "name") else str(state)
+        info = (
+            f"State: {state_name}\n"
+            f"Time: {self.player.get_time() / 1000:.1f}s\n"
+            f"Duration: {self.player.get_duration() / 1000:.1f}s\n"
+            f"Volume: {self.player.get_volume()}%\n"
+            f"Muted: {'Yes' if self.player.is_muted() else 'No'}\n"
+            f"Speed: {self.player.get_rate():.2f}x\n"
+            f"Loop current: {'On' if self._loop_current else 'Off'}"
+        )
+        QMessageBox.information(self, "Media Information", info)
+
     # ── YouTube Actions ──────────────────────────────────────────────
 
     def _play_youtube_url(self):
@@ -868,8 +1179,11 @@ class MainWindow(QMainWindow):
             "M": self._on_mute,
             "S": self._on_stop,
             "Ctrl+O": self._open_local_file,
+            "Ctrl+L": self._open_network_url_dialog,
             "]": lambda: self.player.cycle_speed(forward=True),
             "[": lambda: self.player.cycle_speed(forward=False),
+            "=": lambda: self.player.set_rate(1.0),
+            "Shift+S": self._save_snapshot,
         }
 
         for key_seq, callback in shortcuts.items():
@@ -895,6 +1209,11 @@ class MainWindow(QMainWindow):
 
     def _update_transport(self):
         """Sync transport bar with current player state."""
+        state = self.player.media_player.get_state()
+        if self._loop_current and state == vlc.State.Ended and self.player.has_media():
+            self.player.set_time(0)
+            self.player.media_player.play()
+
         position = self.player.get_position()
         current_ms = self.player.get_time()
         total_ms = self.player.get_duration()
