@@ -36,6 +36,14 @@ if _is_wayland:
     if "DISPLAY" not in os.environ:
         os.environ["DISPLAY"] = ":0"
 
+# ── Preload native libraries before Qt ──────────────────────
+# On Windows, PyQt6 can interfere with onnxruntime's DLL loading.
+# Importing onnxruntime BEFORE PyQt6 avoids the conflict.
+try:
+    import onnxruntime  # noqa: F401
+except ImportError:
+    pass  # Will be handled gracefully by AirWritingEngine
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt

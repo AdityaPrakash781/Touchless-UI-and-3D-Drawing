@@ -36,7 +36,7 @@ DEFAULT_MAPPING = {
     "stop":      "pause",
     "peace":     "forward",
     "ok":        "speed_cycle",
-    "one":       "draw",
+    "one":       "forward_skip",
     "mute":      "mute_toggle",
     "call":      "none",
     "rock":      "fullscreen",

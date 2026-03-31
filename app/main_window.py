@@ -4,6 +4,8 @@ GestureVLC — Main Window (Obsidian Cinematic Edition)
 Central application window embedding VLC video playback,
 YouTube search/URL integration, gesture controls, and 3D drawing.
 Styled with Stitch MCP Obsidian Cinematic design system.
+
+Air Writing: CNN-based character recognition from pinch-gesture drawing.
 """
 
 import sys
@@ -15,7 +17,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLineEdit, QPushButton, QLabel,
     QFrame, QScrollArea, QSizePolicy, QStatusBar,
-    QApplication, QMessageBox, QComboBox
+    QApplication, QMessageBox, QComboBox, QGridLayout
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import QKeySequence, QShortcut, QFont, QIcon
@@ -27,6 +29,7 @@ from app.file_browser import pick_video_file, get_recent_files
 from app.styles import STYLESHEET, COLORS
 from app.drawing import DrawingCanvas, FullscreenDrawingWindow
 from app.popout_windows import HandPreviewWindow, PictureInPictureWindow
+from app.air_writing import AirWritingEngine
 from gesture.tracker import GestureTracker
 from gesture.settings import (
     load_gesture_mapping, save_gesture_mapping, reset_gesture_mapping,
@@ -159,15 +162,23 @@ class MainWindow(QMainWindow):
         self._gesture_combos = {}  # gesture_name -> QComboBox
         self._drawing_active = False
         self._last_draw_time = 0
+        self._is_pinching = False
+
+        # Air Writing Engine
+        self._air_engine = AirWritingEngine()
+        self._air_model_loaded = False
+        self._recognize_timer = None  # Timer for delayed recognition after stroke ends
 
         # New feature windows
         self._pip_window = None
+        self._closing_pip = False
         self._hand_preview = None
         self._fullscreen_draw = None
 
         self._setup_ui()
         self._setup_shortcuts()
         self._start_update_timer()
+        self._load_air_writing_model()
 
         # Apply stylesheet
         self.setStyleSheet(STYLESHEET)
@@ -525,13 +536,13 @@ class MainWindow(QMainWindow):
         drawing_layout.setContentsMargins(16, 20, 16, 16)
         drawing_layout.setSpacing(12)
 
-        drawing_title = QLabel("3D SPATIAL DRAWING")
+        drawing_title = QLabel("AIR DRAWING & WRITING")
         drawing_title.setObjectName("titleLabel")
         drawing_layout.addWidget(drawing_title)
 
         drawing_desc = QLabel(
-            "Point your index finger and move it in space to draw.\n"
-            "Depth (Z) is mapped to line thickness and opacity."
+            "Pinch your thumb and index finger together to draw.\n"
+            "Release to stop. Characters are recognized automatically."
         )
         drawing_desc.setObjectName("secondaryLabel")
         drawing_layout.addWidget(drawing_desc)
@@ -541,43 +552,89 @@ class MainWindow(QMainWindow):
         self.drawing_indicator = QLabel("TRACKING DISABLED")
         self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
         status_row.addWidget(self.drawing_indicator)
-        
+
         self.btn_draw_toggle_tracking = QPushButton("Start Tracking")
         self.btn_draw_toggle_tracking.setFixedWidth(150)
         self.btn_draw_toggle_tracking.clicked.connect(self._toggle_gesture_tracking)
         status_row.addWidget(self.btn_draw_toggle_tracking, alignment=Qt.AlignmentFlag.AlignRight)
-        
+
         drawing_layout.addLayout(status_row)
+
+        # Air Writing Model Status
+        self.air_writing_status = QLabel("")
+        self.air_writing_status.setObjectName("secondaryLabel")
+        drawing_layout.addWidget(self.air_writing_status)
 
         # The Canvas
         self.canvas = DrawingCanvas()
         drawing_layout.addWidget(self.canvas, stretch=1)
 
-        # Controls
-        draw_btn_row = QHBoxLayout()
-        draw_btn_row.setSpacing(8)
+        # Recognized text display
+        text_row = QHBoxLayout()
+        text_row.setSpacing(8)
 
-        self.btn_clear_canvas = QPushButton("Clear")
-        self.btn_clear_canvas.clicked.connect(self.canvas.clear)
-        draw_btn_row.addWidget(self.btn_clear_canvas)
+        text_label = QLabel("TEXT:")
+        text_label.setObjectName("titleLabel")
+        text_label.setFixedWidth(50)
+        text_row.addWidget(text_label)
 
-        self.btn_undo_canvas = QPushButton("Undo")
+        self.recognized_text_display = QLabel("")
+        self.recognized_text_display.setStyleSheet(
+            f"color: {COLORS['text_accent']}; font-family: 'JetBrains Mono', monospace; "
+            f"font-size: 16px; font-weight: 600; padding: 4px 8px; "
+            f"background: {COLORS['bg_tertiary']}; border-radius: 8px;"
+        )
+        self.recognized_text_display.setMinimumHeight(32)
+        text_row.addWidget(self.recognized_text_display, stretch=1)
+
+        drawing_layout.addLayout(text_row)
+
+        # Controls (split into two rows for readability in narrow sidebar)
+        draw_btn_grid = QGridLayout()
+        draw_btn_grid.setHorizontalSpacing(8)
+        draw_btn_grid.setVerticalSpacing(8)
+
+        self.btn_clear_canvas = QPushButton("Clear Canvas")
+        self.btn_clear_canvas.setToolTip("Clear drawing and recognized text")
+        self.btn_clear_canvas.setMinimumHeight(40)
+        self.btn_clear_canvas.clicked.connect(self._clear_drawing_and_text)
+        draw_btn_grid.addWidget(self.btn_clear_canvas, 0, 0)
+
+        self.btn_undo_canvas = QPushButton("Undo Stroke")
+        self.btn_undo_canvas.setToolTip("Undo the last stroke")
+        self.btn_undo_canvas.setMinimumHeight(40)
         self.btn_undo_canvas.clicked.connect(self.canvas.undo)
-        draw_btn_row.addWidget(self.btn_undo_canvas)
+        draw_btn_grid.addWidget(self.btn_undo_canvas, 0, 1)
 
-        self.btn_move_mode = QPushButton("Move")
+        self.btn_recognize = QPushButton("Recognize Text")
+        self.btn_recognize.setToolTip("Recognize current drawing now")
+        self.btn_recognize.setMinimumHeight(40)
+        self.btn_recognize.clicked.connect(self._force_recognize)
+        draw_btn_grid.addWidget(self.btn_recognize, 0, 2)
+
+        self.btn_backspace = QPushButton("Backspace")
+        self.btn_backspace.setToolTip("Delete last recognized character")
+        self.btn_backspace.setMinimumHeight(40)
+        self.btn_backspace.clicked.connect(self._air_writing_backspace)
+        draw_btn_grid.addWidget(self.btn_backspace, 1, 0)
+
+        self.btn_move_mode = QPushButton("Move Paths")
+        self.btn_move_mode.setToolTip("Toggle move mode to drag strokes")
         self.btn_move_mode.setCheckable(True)
+        self.btn_move_mode.setMinimumHeight(40)
         self.btn_move_mode.toggled.connect(self.canvas.set_move_mode)
-        draw_btn_row.addWidget(self.btn_move_mode)
+        draw_btn_grid.addWidget(self.btn_move_mode, 1, 1)
 
-        self.btn_fullscreen_draw = QPushButton("Fullscreen")
+        self.btn_fullscreen_draw = QPushButton("Fullscreen Canvas")
         self.btn_fullscreen_draw.setObjectName("accentButton")
+        self.btn_fullscreen_draw.setToolTip("Open drawing canvas in fullscreen")
+        self.btn_fullscreen_draw.setMinimumHeight(40)
         self.btn_fullscreen_draw.clicked.connect(self._open_fullscreen_drawing)
-        draw_btn_row.addWidget(self.btn_fullscreen_draw)
+        draw_btn_grid.addWidget(self.btn_fullscreen_draw, 1, 2)
 
-        drawing_layout.addLayout(draw_btn_row)
+        drawing_layout.addLayout(draw_btn_grid)
 
-        tabs.addTab(drawing_widget, "3D DRAW")
+        tabs.addTab(drawing_widget, "AIR DRAW")
 
         # Populate recent files
         self._refresh_recent_files()
@@ -644,6 +701,8 @@ class MainWindow(QMainWindow):
         self._clear_results()
 
         if not results:
+            self.status_bar.showMessage("No results found")
+            self._set_youtube_loading(False)
             self.yt_status.setText("No results found")
             self.btn_search.setEnabled(True)
             return
@@ -873,11 +932,18 @@ class MainWindow(QMainWindow):
             self._gesture_tracker.stop()
             self._gesture_tracker.wait(2000)
             self._gesture_tracker = None
+            if self._recognize_timer:
+                self._recognize_timer.stop()
+            if self._is_pinching:
+                self._air_engine.end_stroke()
+            self._is_pinching = False
+            self._set_drawing_active(False)
             self.btn_gesture_toggle.setText("Start Gesture Control")
             self.btn_draw_toggle_tracking.setText("Start Tracking")
             self.gesture_status.setText("Status: Inactive")
             self.drawing_indicator.setText("TRACKING DISABLED")
             self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
+            self.canvas.clear_pinch_indicator()
             self.status_bar.showMessage("Gesture tracking stopped")
         else:
             # Save current dropdown selections before starting
@@ -885,8 +951,9 @@ class MainWindow(QMainWindow):
             self._gesture_tracker = GestureTracker(camera_index=0)
             self._gesture_tracker.gesture_detected.connect(self._on_gesture_detected)
             self._gesture_tracker.finger_moved.connect(self._on_finger_moved)
-            self._gesture_tracker.hand_lost.connect(lambda: self._set_drawing_active(False))
-            self._gesture_tracker.hand_found.connect(lambda: self._set_drawing_active(False))
+            self._gesture_tracker.pinch_moved.connect(self._on_pinch_moved)
+            self._gesture_tracker.hand_lost.connect(self._on_hand_lost_drawing)
+            self._gesture_tracker.hand_found.connect(lambda: None)
             self._gesture_tracker.status_changed.connect(
                 lambda msg: self.gesture_status.setText(f"Status: {msg}")
             )
@@ -897,15 +964,16 @@ class MainWindow(QMainWindow):
             self._gesture_tracker.frame_ready.connect(self._on_tracker_frame)
             if self._hand_preview and self._hand_preview.isVisible():
                 self._gesture_tracker.set_emit_frames(True)
+            self._gesture_tracker.set_drawing_mode(True)
             self._gesture_tracker.start()
             self.btn_gesture_toggle.setText("Stop Gesture Control")
             self.btn_draw_toggle_tracking.setText("Stop Tracking")
-            self.drawing_indicator.setStyleSheet("color: #f0a030; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
-            self.status_bar.showMessage("Gesture tracking started")
+            self.drawing_indicator.setText("READY — Pinch to Draw")
+            self.drawing_indicator.setStyleSheet("color: #3fb950; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
+            self.status_bar.showMessage("Gesture tracking started — pinch to draw")
 
     def _on_gesture_detected(self, gesture: str, action: str, confidence: float):
         """Handle a detected gesture by performing the mapped action."""
-        print(f"DEBUG: Gesture detected: {gesture} -> {action} ({confidence:.2f})")
         # Use the USER's custom mapping, not the tracker's built-in one
         custom_action = self._gesture_mapping.get(gesture, action)
 
@@ -917,7 +985,7 @@ class MainWindow(QMainWindow):
             f"Gesture: {gesture} → {display_action} ({confidence:.0%})"
         )
 
-        # Execute the action
+        # Execute the action (drawing is now pinch-based, not gesture-based)
         action_map = {
             "play_pause": self._on_play_pause,
             "stop": self._on_stop,
@@ -930,21 +998,132 @@ class MainWindow(QMainWindow):
             "speed_cycle": lambda: self.player.cycle_speed(forward=True),
             "mute_toggle": self._on_mute,
             "fullscreen": self._toggle_fullscreen,
-            "draw": self._toggle_drawing_mode,
         }
 
         handler = action_map.get(custom_action)
         if handler:
             handler()
-        
-        # If the gesture was NOT 'one' (or whatever maps to 'draw'), stop drawing
-        if custom_action != "draw":
-            self._set_drawing_active(False)
 
-    def _toggle_drawing_mode(self):
-        """Action handler for the 'draw' action."""
-        self._last_draw_time = time.time()
-        self._set_drawing_active(True)
+    # ── Air Writing & Pinch Drawing ──────────────────────────────────
+
+    def _load_air_writing_model(self):
+        """Load the CNN model for air writing recognition."""
+        self._air_model_loaded = self._air_engine.load_model()
+        if self._air_model_loaded:
+            if hasattr(self, 'air_writing_status'):
+                self.air_writing_status.setText(
+                    f"✅ Character recognition active ({self._air_engine._model_type})"
+                )
+                self.air_writing_status.setStyleSheet(
+                    "color: #3fb950; font-size: 11px; font-weight: 600;"
+                )
+        else:
+            if hasattr(self, 'air_writing_status'):
+                self.air_writing_status.setText(
+                    "⚠️ No CNN model found — drawing only (no recognition)"
+                )
+                self.air_writing_status.setStyleSheet(
+                    "color: #f0a030; font-size: 11px; font-weight: 600;"
+                )
+
+    def _on_pinch_moved(self, x: float, y: float, z: float, is_pinching: bool):
+        """Handle pinch point movement — drives drawing and air writing."""
+        # Update pinch indicator on canvas
+        self.canvas.set_pinch_indicator(x, y, is_pinching)
+        if self._fullscreen_draw and self._fullscreen_draw.isVisible():
+            self._fullscreen_draw.canvas.set_pinch_indicator(x, y, is_pinching)
+
+        if is_pinching:
+            # Pen is down — draw
+            if not self._is_pinching:
+                # Pinch just started
+                self._is_pinching = True
+                self._set_drawing_active(True)
+                self._air_engine.begin_stroke()
+                # Cancel any pending recognition timer
+                if self._recognize_timer:
+                    self._recognize_timer.stop()
+
+            # Add point to canvas and air writing engine
+            self.canvas.add_point(x, y, z)
+            self._air_engine.add_stroke_point(x, y)
+
+            # Also send to fullscreen canvas if open
+            if self._fullscreen_draw and self._fullscreen_draw.isVisible():
+                self._fullscreen_draw.canvas.add_point(x, y, z)
+        else:
+            # Pen is up
+            if self._is_pinching:
+                # Pinch just released — end stroke
+                self._is_pinching = False
+                self._set_drawing_active(False)
+                self._air_engine.end_stroke()
+
+                # Start a delayed recognition (wait for multi-stroke chars)
+                if self._air_model_loaded and self._air_engine.has_content():
+                    if self._recognize_timer:
+                        self._recognize_timer.stop()
+                    self._recognize_timer = QTimer(self)
+                    self._recognize_timer.setSingleShot(True)
+                    self._recognize_timer.timeout.connect(self._auto_recognize)
+                    self._recognize_timer.start(1500)  # 1.5s after last stroke
+
+    def _auto_recognize(self):
+        """Auto-recognize after a pause in drawing."""
+        if not self._air_engine.has_content():
+            return
+
+        char, confidence = self._air_engine.recognize_and_clear()
+        if char and confidence > 0.3:
+            self._update_recognized_text()
+            self.canvas.set_live_preview(char, confidence)
+            self.status_bar.showMessage(
+                f"Recognized: '{char}' ({confidence:.0%})"
+            )
+        else:
+            self.canvas.set_live_preview("", 0.0)
+            self._air_engine.clear_board()
+
+    def _force_recognize(self):
+        """Force recognition of whatever is on the blackboard."""
+        if not self._air_model_loaded:
+            self.status_bar.showMessage("⚠ No recognition model loaded")
+            return
+
+        if not self._air_engine.has_content():
+            self.status_bar.showMessage("⚠ Nothing to recognize")
+            return
+
+        char, confidence = self._air_engine.recognize_and_clear()
+        if char:
+            self._update_recognized_text()
+            self.canvas.set_live_preview(char, confidence)
+            self.status_bar.showMessage(
+                f"Recognized: '{char}' ({confidence:.0%})"
+            )
+        else:
+            self.status_bar.showMessage("Could not recognize character")
+
+    def _update_recognized_text(self):
+        """Sync the recognized text display."""
+        text = self._air_engine.recognized_text
+        self.recognized_text_display.setText(text)
+        self.canvas.set_recognized_text(text)
+        if self._fullscreen_draw and self._fullscreen_draw.isVisible():
+            self._fullscreen_draw.canvas.set_recognized_text(text)
+
+    def _air_writing_backspace(self):
+        """Remove last recognized character."""
+        self._air_engine.backspace()
+        self._update_recognized_text()
+
+    def _clear_drawing_and_text(self):
+        """Clear both the canvas and recognized text."""
+        self.canvas.clear()
+        self._air_engine.clear_text()
+        self._air_engine.clear_board()
+        self._update_recognized_text()
+        self.canvas.set_live_preview("", 0.0)
 
     def _set_drawing_active(self, active: bool):
         """Update drawing state and notify canvas."""
@@ -953,36 +1132,50 @@ class MainWindow(QMainWindow):
         self._drawing_active = active
         self.canvas.set_drawing(active)
         if active:
-            self.drawing_indicator.setText("DRAWING ACTIVE")
+            self.drawing_indicator.setText("✏️ DRAWING")
             self.drawing_indicator.setStyleSheet("color: #f0a030; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
-            self.status_bar.showMessage("🖊️ Drawing Active...")
         else:
             # Only show 'Ready' if the tracker is actually running
             if self._gesture_tracker and self._gesture_tracker.isRunning():
-                self.drawing_indicator.setText("READY — Show 'One' Gesture")
+                self.drawing_indicator.setText("READY — Pinch to Draw")
                 self.drawing_indicator.setStyleSheet("color: #3fb950; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
             else:
                 self.drawing_indicator.setText("TRACKING DISABLED")
                 self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
 
+    def _on_hand_lost_drawing(self):
+        """Handle hand lost for drawing."""
+        if self._is_pinching:
+            self._is_pinching = False
+            self._set_drawing_active(False)
+            self._air_engine.end_stroke()
+        self.canvas.clear_pinch_indicator()
+        self.hand_lost_handler()
+
+    def hand_lost_handler(self):
+        """Generic hand lost handler."""
+        pass  # Can be extended
+
     def _on_finger_moved(self, x: float, y: float, z: float):
-        """Handle smoothed finger movement from tracker."""
-        if self._drawing_active:
-            if time.time() - self._last_draw_time > 1.5:
-                self._set_drawing_active(False)
-
-        # Send to main canvas
-        self.canvas.add_point(x, y, z)
-
-        # Also send to fullscreen canvas if open
-        if self._fullscreen_draw and self._fullscreen_draw.isVisible():
-            self._fullscreen_draw.canvas.add_point(x, y, z)
+        """Handle smoothed finger movement from tracker (legacy, kept for compat)."""
+        pass  # Drawing is now handled by _on_pinch_moved
 
     def _on_gesture_error(self, error_msg: str):
         """Handle gesture tracking errors."""
+        if self._gesture_tracker and self._gesture_tracker.isRunning():
+            self._gesture_tracker.stop()
+            self._gesture_tracker.wait(2000)
+        self._gesture_tracker = None
+        if self._is_pinching:
+            self._air_engine.end_stroke()
+        self._is_pinching = False
+        self.canvas.clear_pinch_indicator()
+        self._set_drawing_active(False)
+
         self.gesture_status.setText(f"Status: Error")
-        self.status_bar.showMessage(f"Gesture error: {error_msg}")
         self.btn_gesture_toggle.setText("Start Gesture Control")
+        self.btn_draw_toggle_tracking.setText("Start Tracking")
+        self.status_bar.showMessage(f"Gesture error: {error_msg}")
         QMessageBox.warning(self, "Gesture Error", error_msg)
 
     # ── Hand Preview Window ──────────────────────────────────────────
@@ -1059,15 +1252,24 @@ class MainWindow(QMainWindow):
 
     def _close_pip(self):
         """Close PiP and restore VLC to main frame."""
+        if self._closing_pip:
+            return
+        self._closing_pip = True
+
         if hasattr(self, '_pip_timer') and self._pip_timer:
             self._pip_timer.stop()
             self._pip_timer = None
         if self._pip_window:
+            try:
+                self._pip_window.closed.disconnect(self._on_pip_closed)
+            except Exception:
+                pass
             self._pip_window.close()
             self._pip_window = None
         # Re-embed VLC in main video frame
         QTimer.singleShot(100, self._embed_vlc)
         self.status_bar.showMessage("Video restored to main window")
+        self._closing_pip = False
 
     # ── Fullscreen Drawing ───────────────────────────────────────────
 
@@ -1086,8 +1288,10 @@ class MainWindow(QMainWindow):
     # ── Cleanup ──────────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        """Clean up VLC, gesture, PiP, and preview resources on window close."""
+        """Clean up VLC, gesture, PiP, preview, and air writing resources on close."""
         self.update_timer.stop()
+        if self._recognize_timer:
+            self._recognize_timer.stop()
         if self._gesture_tracker and self._gesture_tracker.isRunning():
             self._gesture_tracker.stop()
             self._gesture_tracker.wait(2000)

@@ -7,10 +7,13 @@ and the trained classifier for gesture recognition in real-time.
 Optimised for low-latency:
   - Reduced sleep interval (10ms vs 30ms)
   - Emits annotated webcam frames for the live preview overlay
+  - Pinch-point tracking for pen-holding gesture drawing
+  - Geometry-based pinch detection (no ML overhead)
 """
 
 import sys
 import time
+import math
 import numpy as np
 import pickle
 import json
@@ -45,6 +48,11 @@ HAND_CONNECTIONS = [
     (5,9),(9,13),(13,17),          # palm
 ]
 
+# Landmark indices
+THUMB_TIP = 4
+INDEX_TIP = 8
+INDEX_MCP = 5  # base of index finger
+
 
 class KalmanFilter:
     """Simple 1D Kalman Filter for smoothing noisy signals."""
@@ -64,13 +72,18 @@ class KalmanFilter:
 
         return self.posteriari_estimate
 
+    def reset(self):
+        """Reset the filter state."""
+        self.posteriari_estimate = 0.0
+        self.posteriari_error_estimate = 1.0
+
 
 class Point3DSmoother:
     """Smoothes a 3D point (x, y, z) using three Kalman filters."""
-    def __init__(self):
-        self.kf_x = KalmanFilter()
-        self.kf_y = KalmanFilter()
-        self.kf_z = KalmanFilter()
+    def __init__(self, process_variance: float = 1e-5, measurement_variance: float = 1e-3):
+        self.kf_x = KalmanFilter(process_variance, measurement_variance)
+        self.kf_y = KalmanFilter(process_variance, measurement_variance)
+        self.kf_z = KalmanFilter(process_variance, measurement_variance)
 
     def update(self, x: float, y: float, z: float) -> tuple[float, float, float]:
         return (
@@ -78,6 +91,11 @@ class Point3DSmoother:
             self.kf_y.update(y),
             self.kf_z.update(z)
         )
+
+    def reset(self):
+        self.kf_x.reset()
+        self.kf_y.reset()
+        self.kf_z.reset()
 
 
 class GestureTracker(QThread):
@@ -90,6 +108,7 @@ class GestureTracker(QThread):
     Signals:
         gesture_detected(str, str, float): (gesture_name, action, confidence)
         finger_moved(float, float, float): (x, y, z) index finger tip
+        pinch_moved(float, float, float, bool): (x, y, z, is_pinching) pinch point
         hand_lost(): emitted when no hand is detected
         hand_found(): emitted when a hand re-appears
         status_changed(str): Status message updates
@@ -99,6 +118,7 @@ class GestureTracker(QThread):
 
     gesture_detected = pyqtSignal(str, str, float)
     finger_moved = pyqtSignal(float, float, float)
+    pinch_moved = pyqtSignal(float, float, float, bool)  # x, y, z, is_pinching
     hand_lost = pyqtSignal()
     hand_found = pyqtSignal()
     status_changed = pyqtSignal(str)
@@ -110,6 +130,13 @@ class GestureTracker(QThread):
     STABILITY_COUNT = 5
     BUFFER_SIZE = 30
 
+    # Pinch detection threshold: distance between thumb tip and index tip
+    # in normalized coordinates. Below this = pinching (pen down).
+    PINCH_THRESHOLD = 0.06
+    PINCH_RELEASE_THRESHOLD = 0.09  # Hysteresis: slightly higher to release
+    PINCH_ENGAGE_FRAMES = 3
+    PINCH_RELEASE_FRAMES = 2
+
     def __init__(self, camera_index: int = 0, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
@@ -120,16 +147,33 @@ class GestureTracker(QThread):
         self._class_to_action = {}
         self._needs_scaling = False
         self._emit_frames = False  # Only emit frames if preview is active
+        self._drawing_mode = False  # When True, skip gesture classification for speed
 
         # Temporal buffering & Smoothing
         self._landmark_buffer = []
         self._finger_smoother = Point3DSmoother()
+        # Pinch smoother: faster response for drawing (higher process variance)
+        self._pinch_smoother = Point3DSmoother(
+            process_variance=5e-4,   # Faster tracking
+            measurement_variance=5e-4  # Less smoothing for responsiveness
+        )
         self._hand_lost_count = 0
         self._grace_period = 10
+        self._is_pinching = False  # Current pinch state
+        self._pinch_close_frames = 0
+        self._pinch_open_frames = 0
+        self._last_pinch_point: tuple[float, float, float] | None = None
 
     def set_emit_frames(self, enabled: bool):
         """Toggle webcam frame emission for the live preview."""
         self._emit_frames = enabled
+
+    def set_drawing_mode(self, enabled: bool):
+        """
+        Toggle drawing mode. When active, gesture classification is skipped
+        for lower latency, and pinch tracking gets priority.
+        """
+        self._drawing_mode = enabled
 
     def load_model(self) -> bool:
         """Load the trained gesture model and class mapping."""
@@ -226,44 +270,98 @@ class GestureTracker(QThread):
                     hand_lms = result.hand_landmarks[0]
                     detected_landmarks = hand_lms
 
-                    landmarks = self._normalize_landmarks(hand_lms)
-                    if landmarks is not None:
-                        gesture, confidence = self._classify(landmarks)
+                    # ── Pinch Detection (always runs, geometry-only) ──
+                    thumb_tip = hand_lms[THUMB_TIP]
+                    index_tip = hand_lms[INDEX_TIP]
 
-                        if gesture and confidence >= self.CONFIDENCE_THRESHOLD:
-                            consecutive_predictions.append(gesture)
-                            if len(consecutive_predictions) > self.STABILITY_COUNT:
-                                consecutive_predictions = consecutive_predictions[-self.STABILITY_COUNT:]
+                    # Distance between thumb tip and index tip
+                    pinch_dist = math.sqrt(
+                        (thumb_tip.x - index_tip.x) ** 2 +
+                        (thumb_tip.y - index_tip.y) ** 2 +
+                        (thumb_tip.z - index_tip.z) ** 2
+                    )
 
-                            if (len(consecutive_predictions) >= self.STABILITY_COUNT and
-                                    len(set(consecutive_predictions)) == 1):
-                                now = time.time()
-                                if (gesture != last_gesture or
-                                        now - last_trigger_time >= self.DEBOUNCE_TIME):
-                                    action = self._class_to_action.get(gesture, "none")
-                                    if action != "none":
-                                        self.gesture_detected.emit(
-                                            gesture, action, confidence
-                                        )
-                                        last_gesture = gesture
-                                        last_trigger_time = now
-                        else:
-                            consecutive_predictions.clear()
+                    # Frame-confirmed hysteresis pinch detection
+                    if pinch_dist < self.PINCH_THRESHOLD:
+                        self._pinch_close_frames += 1
+                        self._pinch_open_frames = 0
+                    elif pinch_dist > self.PINCH_RELEASE_THRESHOLD:
+                        self._pinch_open_frames += 1
+                        self._pinch_close_frames = 0
+                    else:
+                        # Between thresholds: hold current state.
+                        self._pinch_close_frames = 0
+                        self._pinch_open_frames = 0
 
-                        # Finger Tracking (Smoothed)
-                        idx_tip = hand_lms[8]
-                        sx, sy, sz = self._finger_smoother.update(idx_tip.x, idx_tip.y, idx_tip.z)
-                        self.finger_moved.emit(sx, sy, sz)
+                    if (not self._is_pinching and
+                            self._pinch_close_frames >= self.PINCH_ENGAGE_FRAMES):
+                        self._is_pinching = True
+                        self._pinch_close_frames = 0
 
-                        self._landmark_buffer.append(landmarks)
-                        if len(self._landmark_buffer) > self.BUFFER_SIZE:
-                            self._landmark_buffer.pop(0)
+                    if (self._is_pinching and
+                            self._pinch_open_frames >= self.PINCH_RELEASE_FRAMES):
+                        self._is_pinching = False
+                        self._pinch_open_frames = 0
 
-                        self._hand_lost_count = 0
+                    # Pinch midpoint (where the "pen tip" is)
+                    mid_x = (thumb_tip.x + index_tip.x) / 2.0
+                    mid_y = (thumb_tip.y + index_tip.y) / 2.0
+                    mid_z = (thumb_tip.z + index_tip.z) / 2.0
+
+                    # Smooth the pinch point
+                    sx, sy, sz = self._pinch_smoother.update(mid_x, mid_y, mid_z)
+                    self._last_pinch_point = (sx, sy, sz)
+                    self.pinch_moved.emit(sx, sy, sz, self._is_pinching)
+
+                    # ── Gesture Classification (skip during active drawing) ──
+                    if not (self._drawing_mode and self._is_pinching):
+                        landmarks = self._normalize_landmarks(hand_lms)
+                        if landmarks is not None:
+                            gesture, confidence = self._classify(landmarks)
+
+                            if gesture and confidence >= self.CONFIDENCE_THRESHOLD:
+                                consecutive_predictions.append(gesture)
+                                if len(consecutive_predictions) > self.STABILITY_COUNT:
+                                    consecutive_predictions = consecutive_predictions[-self.STABILITY_COUNT:]
+
+                                if (len(consecutive_predictions) >= self.STABILITY_COUNT and
+                                        len(set(consecutive_predictions)) == 1):
+                                    now = time.time()
+                                    if (gesture != last_gesture or
+                                            now - last_trigger_time >= self.DEBOUNCE_TIME):
+                                        action = self._class_to_action.get(gesture, "none")
+                                        if action != "none":
+                                            self.gesture_detected.emit(
+                                                gesture, action, confidence
+                                            )
+                                            last_gesture = gesture
+                                            last_trigger_time = now
+                            else:
+                                consecutive_predictions.clear()
+
+                            # Legacy finger tracking (still used for backward compat)
+                            idx_tip = hand_lms[INDEX_TIP]
+                            fsx, fsy, fsz = self._finger_smoother.update(
+                                idx_tip.x, idx_tip.y, idx_tip.z
+                            )
+                            self.finger_moved.emit(fsx, fsy, fsz)
+
+                            self._landmark_buffer.append(landmarks)
+                            if len(self._landmark_buffer) > self.BUFFER_SIZE:
+                                self._landmark_buffer.pop(0)
+
+                    self._hand_lost_count = 0
 
                 else:
                     consecutive_predictions.clear()
                     self._hand_lost_count += 1
+                    if self._is_pinching or self._last_pinch_point is not None:
+                        self._is_pinching = False
+                        self._pinch_close_frames = 0
+                        self._pinch_open_frames = 0
+                        if self._last_pinch_point is not None:
+                            px, py, pz = self._last_pinch_point
+                            self.pinch_moved.emit(px, py, pz, False)
                     if self._hand_lost_count == self._grace_period:
                         self.hand_lost.emit()
 
@@ -299,6 +397,24 @@ class GestureTracker(QThread):
                 cx, cy = int(lm.x * w), int(lm.y * h)
                 cv2.circle(display, (cx, cy), 4, (255, 193, 118), -1, cv2.LINE_AA)
                 cv2.circle(display, (cx, cy), 6, (240, 160, 48), 1, cv2.LINE_AA)
+
+            # Highlight pinch point
+            thumb = hand_landmarks[THUMB_TIP]
+            index = hand_landmarks[INDEX_TIP]
+            mid_x = int((thumb.x + index.x) / 2 * w)
+            mid_y = int((thumb.y + index.y) / 2 * h)
+
+            if self._is_pinching:
+                # Green dot when pinching (drawing)
+                cv2.circle(display, (mid_x, mid_y), 10, (48, 255, 100), -1, cv2.LINE_AA)
+                cv2.circle(display, (mid_x, mid_y), 12, (255, 255, 255), 2, cv2.LINE_AA)
+                # Draw line between thumb and index
+                tx, ty = int(thumb.x * w), int(thumb.y * h)
+                ix, iy = int(index.x * w), int(index.y * h)
+                cv2.line(display, (tx, ty), (ix, iy), (48, 255, 100), 3, cv2.LINE_AA)
+            else:
+                # Orange dot when not pinching
+                cv2.circle(display, (mid_x, mid_y), 8, (240, 160, 48), -1, cv2.LINE_AA)
 
         # Convert to QImage
         bytes_per_line = ch * w
