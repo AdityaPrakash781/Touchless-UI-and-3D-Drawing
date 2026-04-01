@@ -4,22 +4,27 @@ GestureVLC — Main Window (Obsidian Cinematic Edition)
 Central application window embedding VLC video playback,
 YouTube search/URL integration, gesture controls, and 3D drawing.
 Styled with Stitch MCP Obsidian Cinematic design system.
+
+Air Writing: CNN-based character recognition from pinch-gesture drawing.
 """
 
 import sys
 import os
 import time
 import json
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLineEdit, QPushButton, QLabel,
     QFrame, QScrollArea, QSizePolicy, QStatusBar,
-    QApplication, QMessageBox, QComboBox
+    QApplication, QMessageBox, QComboBox, QGridLayout,
+    QFileDialog, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
-from PyQt6.QtGui import QKeySequence, QShortcut, QFont, QIcon
+from PyQt6.QtGui import QKeySequence, QShortcut, QFont, QIcon, QAction, QActionGroup
 
+import vlc
 from app.vlc_player import VLCPlayer
 from app.youtube import StreamExtractor, SearchWorker, search_youtube
 from app.controls import TransportBar
@@ -27,6 +32,7 @@ from app.file_browser import pick_video_file, get_recent_files
 from app.styles import STYLESHEET, COLORS
 from app.drawing import DrawingCanvas, FullscreenDrawingWindow
 from app.popout_windows import HandPreviewWindow, PictureInPictureWindow
+from app.air_writing import AirWritingEngine
 from gesture.tracker import GestureTracker
 from gesture.settings import (
     load_gesture_mapping, save_gesture_mapping, reset_gesture_mapping,
@@ -159,15 +165,25 @@ class MainWindow(QMainWindow):
         self._gesture_combos = {}  # gesture_name -> QComboBox
         self._drawing_active = False
         self._last_draw_time = 0
+        self._is_pinching = False
+
+        # Air Writing Engine
+        self._air_engine = AirWritingEngine()
+        self._air_model_loaded = False
+        self._recognize_timer = None  # Timer for delayed recognition after stroke ends
 
         # New feature windows
         self._pip_window = None
+        self._closing_pip = False
         self._hand_preview = None
         self._fullscreen_draw = None
+        self._loop_current = False
+        self._always_on_top = False
 
         self._setup_ui()
         self._setup_shortcuts()
         self._start_update_timer()
+        self._load_air_writing_model()
 
         # Apply stylesheet
         self.setStyleSheet(STYLESHEET)
@@ -264,6 +280,8 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready — Open a file or paste a YouTube link")
+
+        self._setup_menu_bar()
 
         # Embed VLC into the video frame
         # Use a longer delay to ensure the window is fully mapped on XWayland
@@ -525,13 +543,13 @@ class MainWindow(QMainWindow):
         drawing_layout.setContentsMargins(16, 20, 16, 16)
         drawing_layout.setSpacing(12)
 
-        drawing_title = QLabel("3D SPATIAL DRAWING")
+        drawing_title = QLabel("AIR DRAWING & WRITING")
         drawing_title.setObjectName("titleLabel")
         drawing_layout.addWidget(drawing_title)
 
         drawing_desc = QLabel(
-            "Point your index finger and move it in space to draw.\n"
-            "Depth (Z) is mapped to line thickness and opacity."
+            "Pinch your thumb and index finger together to draw.\n"
+            "Release to stop. Characters are recognized automatically."
         )
         drawing_desc.setObjectName("secondaryLabel")
         drawing_layout.addWidget(drawing_desc)
@@ -541,48 +559,398 @@ class MainWindow(QMainWindow):
         self.drawing_indicator = QLabel("TRACKING DISABLED")
         self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
         status_row.addWidget(self.drawing_indicator)
-        
+
         self.btn_draw_toggle_tracking = QPushButton("Start Tracking")
         self.btn_draw_toggle_tracking.setFixedWidth(150)
         self.btn_draw_toggle_tracking.clicked.connect(self._toggle_gesture_tracking)
         status_row.addWidget(self.btn_draw_toggle_tracking, alignment=Qt.AlignmentFlag.AlignRight)
-        
+
         drawing_layout.addLayout(status_row)
+
+        # Air Writing Model Status
+        self.air_writing_status = QLabel("")
+        self.air_writing_status.setObjectName("secondaryLabel")
+        drawing_layout.addWidget(self.air_writing_status)
 
         # The Canvas
         self.canvas = DrawingCanvas()
         drawing_layout.addWidget(self.canvas, stretch=1)
 
-        # Controls
-        draw_btn_row = QHBoxLayout()
-        draw_btn_row.setSpacing(8)
+        # Recognized text display
+        text_row = QHBoxLayout()
+        text_row.setSpacing(8)
 
-        self.btn_clear_canvas = QPushButton("Clear")
-        self.btn_clear_canvas.clicked.connect(self.canvas.clear)
-        draw_btn_row.addWidget(self.btn_clear_canvas)
+        text_label = QLabel("TEXT:")
+        text_label.setObjectName("titleLabel")
+        text_label.setFixedWidth(50)
+        text_row.addWidget(text_label)
 
-        self.btn_undo_canvas = QPushButton("Undo")
+        self.recognized_text_display = QLabel("")
+        self.recognized_text_display.setStyleSheet(
+            f"color: {COLORS['text_accent']}; font-family: 'JetBrains Mono', monospace; "
+            f"font-size: 16px; font-weight: 600; padding: 4px 8px; "
+            f"background: {COLORS['bg_tertiary']}; border-radius: 8px;"
+        )
+        self.recognized_text_display.setMinimumHeight(32)
+        text_row.addWidget(self.recognized_text_display, stretch=1)
+
+        drawing_layout.addLayout(text_row)
+
+        # Controls (split into two rows for readability in narrow sidebar)
+        draw_btn_grid = QGridLayout()
+        draw_btn_grid.setHorizontalSpacing(8)
+        draw_btn_grid.setVerticalSpacing(8)
+
+        self.btn_clear_canvas = QPushButton("Clear Canvas")
+        self.btn_clear_canvas.setToolTip("Clear drawing and recognized text")
+        self.btn_clear_canvas.setMinimumHeight(40)
+        self.btn_clear_canvas.clicked.connect(self._clear_drawing_and_text)
+        draw_btn_grid.addWidget(self.btn_clear_canvas, 0, 0)
+
+        self.btn_undo_canvas = QPushButton("Undo Stroke")
+        self.btn_undo_canvas.setToolTip("Undo the last stroke")
+        self.btn_undo_canvas.setMinimumHeight(40)
         self.btn_undo_canvas.clicked.connect(self.canvas.undo)
-        draw_btn_row.addWidget(self.btn_undo_canvas)
+        draw_btn_grid.addWidget(self.btn_undo_canvas, 0, 1)
 
-        self.btn_move_mode = QPushButton("Move")
+        self.btn_recognize = QPushButton("Recognize Text")
+        self.btn_recognize.setToolTip("Recognize current drawing now")
+        self.btn_recognize.setMinimumHeight(40)
+        self.btn_recognize.clicked.connect(self._force_recognize)
+        draw_btn_grid.addWidget(self.btn_recognize, 0, 2)
+
+        self.btn_backspace = QPushButton("Backspace")
+        self.btn_backspace.setToolTip("Delete last recognized character")
+        self.btn_backspace.setMinimumHeight(40)
+        self.btn_backspace.clicked.connect(self._air_writing_backspace)
+        draw_btn_grid.addWidget(self.btn_backspace, 1, 0)
+
+        self.btn_move_mode = QPushButton("Move Paths")
+        self.btn_move_mode.setToolTip("Toggle move mode to drag strokes")
         self.btn_move_mode.setCheckable(True)
+        self.btn_move_mode.setMinimumHeight(40)
         self.btn_move_mode.toggled.connect(self.canvas.set_move_mode)
-        draw_btn_row.addWidget(self.btn_move_mode)
+        draw_btn_grid.addWidget(self.btn_move_mode, 1, 1)
 
-        self.btn_fullscreen_draw = QPushButton("Fullscreen")
+        self.btn_fullscreen_draw = QPushButton("Fullscreen Canvas")
         self.btn_fullscreen_draw.setObjectName("accentButton")
+        self.btn_fullscreen_draw.setToolTip("Open drawing canvas in fullscreen")
+        self.btn_fullscreen_draw.setMinimumHeight(40)
         self.btn_fullscreen_draw.clicked.connect(self._open_fullscreen_drawing)
-        draw_btn_row.addWidget(self.btn_fullscreen_draw)
+        draw_btn_grid.addWidget(self.btn_fullscreen_draw, 1, 2)
 
-        drawing_layout.addLayout(draw_btn_row)
+        drawing_layout.addLayout(draw_btn_grid)
 
-        tabs.addTab(drawing_widget, "3D DRAW")
+        tabs.addTab(drawing_widget, "AIR DRAW")
 
         # Populate recent files
         self._refresh_recent_files()
 
         return tabs
+
+    # ── Menu Bar ─────────────────────────────────────────────────────
+
+    def _setup_menu_bar(self):
+        """Build VLC-style top menus for media, playback, audio, video, and tools."""
+        menubar = self.menuBar()
+
+        # Media
+        media_menu = menubar.addMenu("Media")
+
+        action_open_file = QAction("Open File...", self)
+        action_open_file.setShortcut("Ctrl+O")
+        action_open_file.triggered.connect(self._open_local_file)
+        media_menu.addAction(action_open_file)
+
+        action_open_url = QAction("Open Network Stream...", self)
+        action_open_url.setShortcut("Ctrl+L")
+        action_open_url.triggered.connect(self._open_network_url_dialog)
+        media_menu.addAction(action_open_url)
+
+        media_menu.addSeparator()
+
+        action_snapshot = QAction("Take Snapshot...", self)
+        action_snapshot.setShortcut("Shift+S")
+        action_snapshot.triggered.connect(self._save_snapshot)
+        media_menu.addAction(action_snapshot)
+
+        media_menu.addSeparator()
+
+        action_quit = QAction("Quit", self)
+        action_quit.setShortcut("Ctrl+Q")
+        action_quit.triggered.connect(self.close)
+        media_menu.addAction(action_quit)
+
+        # Playback
+        playback_menu = menubar.addMenu("Playback")
+
+        action_play_pause = QAction("Play/Pause", self)
+        action_play_pause.setShortcut("Space")
+        action_play_pause.triggered.connect(self._on_play_pause)
+        playback_menu.addAction(action_play_pause)
+
+        action_stop = QAction("Stop", self)
+        action_stop.setShortcut("S")
+        action_stop.triggered.connect(self._on_stop)
+        playback_menu.addAction(action_stop)
+
+        playback_menu.addSeparator()
+
+        action_back_10 = QAction("Jump Backward 10s", self)
+        action_back_10.setShortcut("Left")
+        action_back_10.triggered.connect(lambda: self.player.seek_relative(-10000))
+        playback_menu.addAction(action_back_10)
+
+        action_fwd_10 = QAction("Jump Forward 10s", self)
+        action_fwd_10.setShortcut("Right")
+        action_fwd_10.triggered.connect(lambda: self.player.seek_relative(10000))
+        playback_menu.addAction(action_fwd_10)
+
+        action_back_30 = QAction("Jump Backward 30s", self)
+        action_back_30.setShortcut("Shift+Left")
+        action_back_30.triggered.connect(lambda: self.player.seek_relative(-30000))
+        playback_menu.addAction(action_back_30)
+
+        action_fwd_30 = QAction("Jump Forward 30s", self)
+        action_fwd_30.setShortcut("Shift+Right")
+        action_fwd_30.triggered.connect(lambda: self.player.seek_relative(30000))
+        playback_menu.addAction(action_fwd_30)
+
+        playback_menu.addSeparator()
+
+        action_speed_up = QAction("Faster", self)
+        action_speed_up.setShortcut("]")
+        action_speed_up.triggered.connect(lambda: self.player.cycle_speed(forward=True))
+        playback_menu.addAction(action_speed_up)
+
+        action_speed_down = QAction("Slower", self)
+        action_speed_down.setShortcut("[")
+        action_speed_down.triggered.connect(lambda: self.player.cycle_speed(forward=False))
+        playback_menu.addAction(action_speed_down)
+
+        action_speed_normal = QAction("Normal Speed", self)
+        action_speed_normal.setShortcut("=")
+        action_speed_normal.triggered.connect(lambda: self.player.set_rate(1.0))
+        playback_menu.addAction(action_speed_normal)
+
+        playback_menu.addSeparator()
+
+        action_loop_current = QAction("Loop Current Media", self)
+        action_loop_current.setCheckable(True)
+        action_loop_current.toggled.connect(self._toggle_loop_current)
+        playback_menu.addAction(action_loop_current)
+
+        # Audio
+        audio_menu = menubar.addMenu("Audio")
+
+        action_mute = QAction("Mute", self)
+        action_mute.setShortcut("M")
+        action_mute.triggered.connect(self._on_mute)
+        audio_menu.addAction(action_mute)
+
+        action_vol_up = QAction("Volume Up", self)
+        action_vol_up.setShortcut("Up")
+        action_vol_up.triggered.connect(lambda: self._adjust_volume(5))
+        audio_menu.addAction(action_vol_up)
+
+        action_vol_down = QAction("Volume Down", self)
+        action_vol_down.setShortcut("Down")
+        action_vol_down.triggered.connect(lambda: self._adjust_volume(-5))
+        audio_menu.addAction(action_vol_down)
+
+        audio_menu.addSeparator()
+        self.audio_tracks_menu = audio_menu.addMenu("Audio Track")
+        self.audio_tracks_menu.aboutToShow.connect(self._populate_audio_tracks_menu)
+
+        # Video
+        video_menu = menubar.addMenu("Video")
+
+        action_fullscreen = QAction("Fullscreen", self)
+        action_fullscreen.setShortcut("F")
+        action_fullscreen.triggered.connect(self._toggle_fullscreen)
+        video_menu.addAction(action_fullscreen)
+
+        aspect_menu = video_menu.addMenu("Aspect Ratio")
+        aspect_group = QActionGroup(self)
+        aspect_group.setExclusive(True)
+        aspect_options = [
+            ("Default", ""),
+            ("16:9", "16:9"),
+            ("4:3", "4:3"),
+            ("1:1", "1:1"),
+            ("21:9", "21:9"),
+        ]
+        for label, ratio in aspect_options:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            if ratio == "":
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, r=ratio, l=label: self._set_aspect_ratio(r, l))
+            aspect_group.addAction(action)
+            aspect_menu.addAction(action)
+
+        crop_menu = video_menu.addMenu("Crop")
+        crop_group = QActionGroup(self)
+        crop_group.setExclusive(True)
+        crop_options = [
+            ("None", ""),
+            ("16:9", "16:9"),
+            ("4:3", "4:3"),
+            ("1:1", "1:1"),
+            ("21:9", "21:9"),
+        ]
+        for label, crop in crop_options:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            if crop == "":
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, c=crop, l=label: self._set_crop(c, l))
+            crop_group.addAction(action)
+            crop_menu.addAction(action)
+
+        video_menu.addSeparator()
+        self.subtitle_tracks_menu = video_menu.addMenu("Subtitle Track")
+        self.subtitle_tracks_menu.aboutToShow.connect(self._populate_subtitle_tracks_menu)
+
+        # View
+        view_menu = menubar.addMenu("View")
+
+        action_pip = QAction("Picture-in-Picture", self)
+        action_pip.setCheckable(True)
+        action_pip.toggled.connect(lambda checked: self.btn_pip.setChecked(checked))
+        self.btn_pip.toggled.connect(action_pip.setChecked)
+        view_menu.addAction(action_pip)
+
+        action_hand_preview = QAction("Hand Preview", self)
+        action_hand_preview.setCheckable(True)
+        action_hand_preview.toggled.connect(lambda checked: self.btn_hand_preview.setChecked(checked))
+        self.btn_hand_preview.toggled.connect(action_hand_preview.setChecked)
+        view_menu.addAction(action_hand_preview)
+
+        action_always_on_top = QAction("Always On Top", self)
+        action_always_on_top.setCheckable(True)
+        action_always_on_top.toggled.connect(self._toggle_always_on_top)
+        view_menu.addAction(action_always_on_top)
+
+        # Tools
+        tools_menu = menubar.addMenu("Tools")
+
+        action_media_info = QAction("Media Information", self)
+        action_media_info.triggered.connect(self._show_media_info)
+        tools_menu.addAction(action_media_info)
+
+    def _open_network_url_dialog(self):
+        """Prompt for a URL and play it directly in VLC."""
+        url, ok = QInputDialog.getText(self, "Open Network Stream", "Enter media URL:")
+        if not ok:
+            return
+        url = url.strip()
+        if not url:
+            return
+        self.player.play(url)
+        self.now_playing.setText(f"▶ {url}")
+        self.status_bar.showMessage("Playing network stream")
+
+    def _save_snapshot(self):
+        """Save a frame snapshot to an image file."""
+        if not self.player.has_media():
+            self.status_bar.showMessage("No media loaded for snapshot")
+            return
+
+        default_name = f"vlc_snapshot_{int(time.time())}.png"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Snapshot",
+            str(Path.home() / default_name),
+            "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)",
+        )
+        if not path:
+            return
+
+        ok = self.player.take_snapshot(path)
+        if ok:
+            self.status_bar.showMessage(f"Snapshot saved: {path}")
+        else:
+            self.status_bar.showMessage("Snapshot failed")
+
+    def _toggle_loop_current(self, enabled: bool):
+        """Toggle looping for the currently loaded media item."""
+        self._loop_current = enabled
+        self.status_bar.showMessage("Loop current media: ON" if enabled else "Loop current media: OFF")
+
+    def _set_aspect_ratio(self, ratio: str, label: str):
+        """Apply selected aspect ratio."""
+        self.player.set_aspect_ratio(ratio)
+        self.status_bar.showMessage(f"Aspect ratio: {label}")
+
+    def _set_crop(self, crop: str, label: str):
+        """Apply selected crop mode."""
+        self.player.set_crop(crop)
+        self.status_bar.showMessage(f"Crop: {label}")
+
+    def _populate_audio_tracks_menu(self):
+        """Rebuild audio tracks submenu based on current media."""
+        self.audio_tracks_menu.clear()
+        tracks = self.player.get_audio_tracks()
+        if not tracks:
+            action = QAction("No audio tracks", self)
+            action.setEnabled(False)
+            self.audio_tracks_menu.addAction(action)
+            return
+
+        current = self.player.get_current_audio_track()
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for track_id, label in tracks:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(track_id == current)
+            action.triggered.connect(lambda checked, tid=track_id: self.player.set_audio_track(tid))
+            group.addAction(action)
+            self.audio_tracks_menu.addAction(action)
+
+    def _populate_subtitle_tracks_menu(self):
+        """Rebuild subtitle tracks submenu based on current media."""
+        self.subtitle_tracks_menu.clear()
+        tracks = self.player.get_subtitle_tracks()
+        if not tracks:
+            action = QAction("No subtitle tracks", self)
+            action.setEnabled(False)
+            self.subtitle_tracks_menu.addAction(action)
+            return
+
+        current = self.player.get_current_subtitle_track()
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for track_id, label in tracks:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(track_id == current)
+            action.triggered.connect(lambda checked, tid=track_id: self.player.set_subtitle_track(tid))
+            group.addAction(action)
+            self.subtitle_tracks_menu.addAction(action)
+
+    def _toggle_always_on_top(self, enabled: bool):
+        """Toggle top-most window mode."""
+        self._always_on_top = enabled
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        self.show()
+        self.status_bar.showMessage("Always on top: ON" if enabled else "Always on top: OFF")
+
+    def _show_media_info(self):
+        """Show current media playback diagnostics."""
+        state = self.player.media_player.get_state()
+        state_name = state.name if hasattr(state, "name") else str(state)
+        info = (
+            f"State: {state_name}\n"
+            f"Time: {self.player.get_time() / 1000:.1f}s\n"
+            f"Duration: {self.player.get_duration() / 1000:.1f}s\n"
+            f"Volume: {self.player.get_volume()}%\n"
+            f"Muted: {'Yes' if self.player.is_muted() else 'No'}\n"
+            f"Speed: {self.player.get_rate():.2f}x\n"
+            f"Loop current: {'On' if self._loop_current else 'Off'}"
+        )
+        QMessageBox.information(self, "Media Information", info)
 
     # ── YouTube Actions ──────────────────────────────────────────────
 
@@ -644,6 +1012,8 @@ class MainWindow(QMainWindow):
         self._clear_results()
 
         if not results:
+            self.status_bar.showMessage("No results found")
+            self._set_youtube_loading(False)
             self.yt_status.setText("No results found")
             self.btn_search.setEnabled(True)
             return
@@ -809,8 +1179,11 @@ class MainWindow(QMainWindow):
             "M": self._on_mute,
             "S": self._on_stop,
             "Ctrl+O": self._open_local_file,
+            "Ctrl+L": self._open_network_url_dialog,
             "]": lambda: self.player.cycle_speed(forward=True),
             "[": lambda: self.player.cycle_speed(forward=False),
+            "=": lambda: self.player.set_rate(1.0),
+            "Shift+S": self._save_snapshot,
         }
 
         for key_seq, callback in shortcuts.items():
@@ -836,6 +1209,11 @@ class MainWindow(QMainWindow):
 
     def _update_transport(self):
         """Sync transport bar with current player state."""
+        state = self.player.media_player.get_state()
+        if self._loop_current and state == vlc.State.Ended and self.player.has_media():
+            self.player.set_time(0)
+            self.player.media_player.play()
+
         position = self.player.get_position()
         current_ms = self.player.get_time()
         total_ms = self.player.get_duration()
@@ -873,11 +1251,18 @@ class MainWindow(QMainWindow):
             self._gesture_tracker.stop()
             self._gesture_tracker.wait(2000)
             self._gesture_tracker = None
+            if self._recognize_timer:
+                self._recognize_timer.stop()
+            if self._is_pinching:
+                self._air_engine.end_stroke()
+            self._is_pinching = False
+            self._set_drawing_active(False)
             self.btn_gesture_toggle.setText("Start Gesture Control")
             self.btn_draw_toggle_tracking.setText("Start Tracking")
             self.gesture_status.setText("Status: Inactive")
             self.drawing_indicator.setText("TRACKING DISABLED")
             self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
+            self.canvas.clear_pinch_indicator()
             self.status_bar.showMessage("Gesture tracking stopped")
         else:
             # Save current dropdown selections before starting
@@ -885,8 +1270,9 @@ class MainWindow(QMainWindow):
             self._gesture_tracker = GestureTracker(camera_index=0)
             self._gesture_tracker.gesture_detected.connect(self._on_gesture_detected)
             self._gesture_tracker.finger_moved.connect(self._on_finger_moved)
-            self._gesture_tracker.hand_lost.connect(lambda: self._set_drawing_active(False))
-            self._gesture_tracker.hand_found.connect(lambda: self._set_drawing_active(False))
+            self._gesture_tracker.pinch_moved.connect(self._on_pinch_moved)
+            self._gesture_tracker.hand_lost.connect(self._on_hand_lost_drawing)
+            self._gesture_tracker.hand_found.connect(lambda: None)
             self._gesture_tracker.status_changed.connect(
                 lambda msg: self.gesture_status.setText(f"Status: {msg}")
             )
@@ -897,15 +1283,16 @@ class MainWindow(QMainWindow):
             self._gesture_tracker.frame_ready.connect(self._on_tracker_frame)
             if self._hand_preview and self._hand_preview.isVisible():
                 self._gesture_tracker.set_emit_frames(True)
+            self._gesture_tracker.set_drawing_mode(True)
             self._gesture_tracker.start()
             self.btn_gesture_toggle.setText("Stop Gesture Control")
             self.btn_draw_toggle_tracking.setText("Stop Tracking")
-            self.drawing_indicator.setStyleSheet("color: #f0a030; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
-            self.status_bar.showMessage("Gesture tracking started")
+            self.drawing_indicator.setText("READY — Pinch to Draw")
+            self.drawing_indicator.setStyleSheet("color: #3fb950; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
+            self.status_bar.showMessage("Gesture tracking started — pinch to draw")
 
     def _on_gesture_detected(self, gesture: str, action: str, confidence: float):
         """Handle a detected gesture by performing the mapped action."""
-        print(f"DEBUG: Gesture detected: {gesture} -> {action} ({confidence:.2f})")
         # Use the USER's custom mapping, not the tracker's built-in one
         custom_action = self._gesture_mapping.get(gesture, action)
 
@@ -917,7 +1304,7 @@ class MainWindow(QMainWindow):
             f"Gesture: {gesture} → {display_action} ({confidence:.0%})"
         )
 
-        # Execute the action
+        # Execute the action (drawing is now pinch-based, not gesture-based)
         action_map = {
             "play_pause": self._on_play_pause,
             "stop": self._on_stop,
@@ -930,21 +1317,132 @@ class MainWindow(QMainWindow):
             "speed_cycle": lambda: self.player.cycle_speed(forward=True),
             "mute_toggle": self._on_mute,
             "fullscreen": self._toggle_fullscreen,
-            "draw": self._toggle_drawing_mode,
         }
 
         handler = action_map.get(custom_action)
         if handler:
             handler()
-        
-        # If the gesture was NOT 'one' (or whatever maps to 'draw'), stop drawing
-        if custom_action != "draw":
-            self._set_drawing_active(False)
 
-    def _toggle_drawing_mode(self):
-        """Action handler for the 'draw' action."""
-        self._last_draw_time = time.time()
-        self._set_drawing_active(True)
+    # ── Air Writing & Pinch Drawing ──────────────────────────────────
+
+    def _load_air_writing_model(self):
+        """Load the CNN model for air writing recognition."""
+        self._air_model_loaded = self._air_engine.load_model()
+        if self._air_model_loaded:
+            if hasattr(self, 'air_writing_status'):
+                self.air_writing_status.setText(
+                    f"✅ Character recognition active ({self._air_engine._model_type})"
+                )
+                self.air_writing_status.setStyleSheet(
+                    "color: #3fb950; font-size: 11px; font-weight: 600;"
+                )
+        else:
+            if hasattr(self, 'air_writing_status'):
+                self.air_writing_status.setText(
+                    "⚠️ No CNN model found — drawing only (no recognition)"
+                )
+                self.air_writing_status.setStyleSheet(
+                    "color: #f0a030; font-size: 11px; font-weight: 600;"
+                )
+
+    def _on_pinch_moved(self, x: float, y: float, z: float, is_pinching: bool):
+        """Handle pinch point movement — drives drawing and air writing."""
+        # Update pinch indicator on canvas
+        self.canvas.set_pinch_indicator(x, y, is_pinching)
+        if self._fullscreen_draw and self._fullscreen_draw.isVisible():
+            self._fullscreen_draw.canvas.set_pinch_indicator(x, y, is_pinching)
+
+        if is_pinching:
+            # Pen is down — draw
+            if not self._is_pinching:
+                # Pinch just started
+                self._is_pinching = True
+                self._set_drawing_active(True)
+                self._air_engine.begin_stroke()
+                # Cancel any pending recognition timer
+                if self._recognize_timer:
+                    self._recognize_timer.stop()
+
+            # Add point to canvas and air writing engine
+            self.canvas.add_point(x, y, z)
+            self._air_engine.add_stroke_point(x, y)
+
+            # Also send to fullscreen canvas if open
+            if self._fullscreen_draw and self._fullscreen_draw.isVisible():
+                self._fullscreen_draw.canvas.add_point(x, y, z)
+        else:
+            # Pen is up
+            if self._is_pinching:
+                # Pinch just released — end stroke
+                self._is_pinching = False
+                self._set_drawing_active(False)
+                self._air_engine.end_stroke()
+
+                # Start a delayed recognition (wait for multi-stroke chars)
+                if self._air_model_loaded and self._air_engine.has_content():
+                    if self._recognize_timer:
+                        self._recognize_timer.stop()
+                    self._recognize_timer = QTimer(self)
+                    self._recognize_timer.setSingleShot(True)
+                    self._recognize_timer.timeout.connect(self._auto_recognize)
+                    self._recognize_timer.start(1500)  # 1.5s after last stroke
+
+    def _auto_recognize(self):
+        """Auto-recognize after a pause in drawing."""
+        if not self._air_engine.has_content():
+            return
+
+        char, confidence = self._air_engine.recognize_and_clear()
+        if char and confidence > 0.3:
+            self._update_recognized_text()
+            self.canvas.set_live_preview(char, confidence)
+            self.status_bar.showMessage(
+                f"Recognized: '{char}' ({confidence:.0%})"
+            )
+        else:
+            self.canvas.set_live_preview("", 0.0)
+            self._air_engine.clear_board()
+
+    def _force_recognize(self):
+        """Force recognition of whatever is on the blackboard."""
+        if not self._air_model_loaded:
+            self.status_bar.showMessage("⚠ No recognition model loaded")
+            return
+
+        if not self._air_engine.has_content():
+            self.status_bar.showMessage("⚠ Nothing to recognize")
+            return
+
+        char, confidence = self._air_engine.recognize_and_clear()
+        if char:
+            self._update_recognized_text()
+            self.canvas.set_live_preview(char, confidence)
+            self.status_bar.showMessage(
+                f"Recognized: '{char}' ({confidence:.0%})"
+            )
+        else:
+            self.status_bar.showMessage("Could not recognize character")
+
+    def _update_recognized_text(self):
+        """Sync the recognized text display."""
+        text = self._air_engine.recognized_text
+        self.recognized_text_display.setText(text)
+        self.canvas.set_recognized_text(text)
+        if self._fullscreen_draw and self._fullscreen_draw.isVisible():
+            self._fullscreen_draw.canvas.set_recognized_text(text)
+
+    def _air_writing_backspace(self):
+        """Remove last recognized character."""
+        self._air_engine.backspace()
+        self._update_recognized_text()
+
+    def _clear_drawing_and_text(self):
+        """Clear both the canvas and recognized text."""
+        self.canvas.clear()
+        self._air_engine.clear_text()
+        self._air_engine.clear_board()
+        self._update_recognized_text()
+        self.canvas.set_live_preview("", 0.0)
 
     def _set_drawing_active(self, active: bool):
         """Update drawing state and notify canvas."""
@@ -953,36 +1451,50 @@ class MainWindow(QMainWindow):
         self._drawing_active = active
         self.canvas.set_drawing(active)
         if active:
-            self.drawing_indicator.setText("DRAWING ACTIVE")
+            self.drawing_indicator.setText("✏️ DRAWING")
             self.drawing_indicator.setStyleSheet("color: #f0a030; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
-            self.status_bar.showMessage("🖊️ Drawing Active...")
         else:
             # Only show 'Ready' if the tracker is actually running
             if self._gesture_tracker and self._gesture_tracker.isRunning():
-                self.drawing_indicator.setText("READY — Show 'One' Gesture")
+                self.drawing_indicator.setText("READY — Pinch to Draw")
                 self.drawing_indicator.setStyleSheet("color: #3fb950; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
             else:
                 self.drawing_indicator.setText("TRACKING DISABLED")
                 self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
 
+    def _on_hand_lost_drawing(self):
+        """Handle hand lost for drawing."""
+        if self._is_pinching:
+            self._is_pinching = False
+            self._set_drawing_active(False)
+            self._air_engine.end_stroke()
+        self.canvas.clear_pinch_indicator()
+        self.hand_lost_handler()
+
+    def hand_lost_handler(self):
+        """Generic hand lost handler."""
+        pass  # Can be extended
+
     def _on_finger_moved(self, x: float, y: float, z: float):
-        """Handle smoothed finger movement from tracker."""
-        if self._drawing_active:
-            if time.time() - self._last_draw_time > 1.5:
-                self._set_drawing_active(False)
-
-        # Send to main canvas
-        self.canvas.add_point(x, y, z)
-
-        # Also send to fullscreen canvas if open
-        if self._fullscreen_draw and self._fullscreen_draw.isVisible():
-            self._fullscreen_draw.canvas.add_point(x, y, z)
+        """Handle smoothed finger movement from tracker (legacy, kept for compat)."""
+        pass  # Drawing is now handled by _on_pinch_moved
 
     def _on_gesture_error(self, error_msg: str):
         """Handle gesture tracking errors."""
+        if self._gesture_tracker and self._gesture_tracker.isRunning():
+            self._gesture_tracker.stop()
+            self._gesture_tracker.wait(2000)
+        self._gesture_tracker = None
+        if self._is_pinching:
+            self._air_engine.end_stroke()
+        self._is_pinching = False
+        self.canvas.clear_pinch_indicator()
+        self._set_drawing_active(False)
+
         self.gesture_status.setText(f"Status: Error")
-        self.status_bar.showMessage(f"Gesture error: {error_msg}")
         self.btn_gesture_toggle.setText("Start Gesture Control")
+        self.btn_draw_toggle_tracking.setText("Start Tracking")
+        self.status_bar.showMessage(f"Gesture error: {error_msg}")
         QMessageBox.warning(self, "Gesture Error", error_msg)
 
     # ── Hand Preview Window ──────────────────────────────────────────
@@ -1059,15 +1571,24 @@ class MainWindow(QMainWindow):
 
     def _close_pip(self):
         """Close PiP and restore VLC to main frame."""
+        if self._closing_pip:
+            return
+        self._closing_pip = True
+
         if hasattr(self, '_pip_timer') and self._pip_timer:
             self._pip_timer.stop()
             self._pip_timer = None
         if self._pip_window:
+            try:
+                self._pip_window.closed.disconnect(self._on_pip_closed)
+            except Exception:
+                pass
             self._pip_window.close()
             self._pip_window = None
         # Re-embed VLC in main video frame
         QTimer.singleShot(100, self._embed_vlc)
         self.status_bar.showMessage("Video restored to main window")
+        self._closing_pip = False
 
     # ── Fullscreen Drawing ───────────────────────────────────────────
 
@@ -1086,8 +1607,10 @@ class MainWindow(QMainWindow):
     # ── Cleanup ──────────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        """Clean up VLC, gesture, PiP, and preview resources on window close."""
+        """Clean up VLC, gesture, PiP, preview, and air writing resources on close."""
         self.update_timer.stop()
+        if self._recognize_timer:
+            self._recognize_timer.stop()
         if self._gesture_tracker and self._gesture_tracker.isRunning():
             self._gesture_tracker.stop()
             self._gesture_tracker.wait(2000)

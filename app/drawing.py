@@ -4,6 +4,10 @@ Drawing Canvas — Obsidian Cinematic 3D drawing using hand gestures.
 Performance-optimised: uses QPainterPath for batched rendering,
 point interpolation for smoothness, and path-level selection for
 the grab-and-move feature.
+
+Pinch-based drawing: tracks the pinch point (thumb+index midpoint)
+for a natural pen-holding gesture. Air writing recognition provides
+real-time character identification.
 """
 
 import math
@@ -11,7 +15,7 @@ from PyQt6.QtWidgets import QFrame, QWidget, QVBoxLayout, QHBoxLayout, QPushButt
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QKeySequence,
-    QShortcut, QCursor, QMouseEvent,
+    QShortcut, QCursor, QMouseEvent, QFont,
 )
 
 
@@ -65,6 +69,9 @@ class DrawingCanvas(QFrame):
     """
     High-performance 2D canvas simulating 3D drawing via hand gestures.
     Supports batched rendering, grab-and-move, and fullscreen mode.
+
+    Now uses pinch-point tracking for natural pen-holding gesture.
+    Displays recognized characters from air writing.
     """
 
     # Signal emitted when user wants fullscreen drawing
@@ -102,6 +109,12 @@ class DrawingCanvas(QFrame):
 
         # ── Interpolation state ──
         self._last_point: tuple[float, float, float] | None = None
+
+        # ── Air Writing Overlay ──
+        self._recognized_text: str = ""
+        self._live_preview_char: str = ""
+        self._live_preview_confidence: float = 0.0
+        self._pinch_indicator: tuple[float, float, bool] | None = None  # (x, y, is_pinching)
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -180,6 +193,27 @@ class DrawingCanvas(QFrame):
         self._paths = paths
         self._paint_dirty = True
 
+    def set_recognized_text(self, text: str):
+        """Update the recognized text overlay."""
+        self._recognized_text = text
+        self._paint_dirty = True
+
+    def set_live_preview(self, char: str, confidence: float):
+        """Update the live character preview."""
+        self._live_preview_char = char
+        self._live_preview_confidence = confidence
+        self._paint_dirty = True
+
+    def set_pinch_indicator(self, x: float, y: float, is_pinching: bool):
+        """Update the pinch point indicator position."""
+        self._pinch_indicator = (x * self.width(), y * self.height(), is_pinching)
+        self._paint_dirty = True
+
+    def clear_pinch_indicator(self):
+        """Remove the pinch indicator."""
+        self._pinch_indicator = None
+        self._paint_dirty = True
+
     # ── Mouse events for grab-and-move ──────────────────────────────
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -240,6 +274,32 @@ class DrawingCanvas(QFrame):
         if self._current_path and self._current_path.points:
             self._draw_path(painter, self._current_path, is_active=True)
 
+        # Draw pinch indicator
+        if self._pinch_indicator:
+            px, py, is_pinching = self._pinch_indicator
+            if is_pinching:
+                # Green glowing dot when drawing
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(48, 255, 100, 60))
+                painter.drawEllipse(QPointF(px, py), 16, 16)
+                painter.setBrush(QColor(48, 255, 100, 180))
+                painter.drawEllipse(QPointF(px, py), 6, 6)
+            else:
+                # Subtle orange dot when hovering
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(240, 160, 48, 40))
+                painter.drawEllipse(QPointF(px, py), 12, 12)
+                painter.setBrush(QColor(240, 160, 48, 120))
+                painter.drawEllipse(QPointF(px, py), 4, 4)
+
+        # Draw recognized text overlay (bottom area)
+        if self._recognized_text:
+            self._draw_text_overlay(painter)
+
+        # Draw live preview character (top-right)
+        if self._live_preview_char:
+            self._draw_live_preview(painter)
+
         painter.end()
 
     def _draw_path(self, painter: QPainter, path: DrawingPath,
@@ -280,6 +340,55 @@ class DrawingCanvas(QFrame):
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(rect, 8, 8)
+
+    def _draw_text_overlay(self, painter: QPainter):
+        """Draw the recognized text at the bottom of the canvas."""
+        w, h = self.width(), self.height()
+
+        # Background bar
+        bar_h = 40
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(13, 14, 18, 200))
+        painter.drawRoundedRect(QRectF(8, h - bar_h - 8, w - 16, bar_h), 10, 10)
+
+        # Text
+        font = QFont("JetBrains Mono", 14, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor(240, 160, 48, 230))
+        painter.drawText(
+            QRectF(16, h - bar_h - 8, w - 32, bar_h),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            f"✏️  {self._recognized_text}"
+        )
+
+    def _draw_live_preview(self, painter: QPainter):
+        """Draw a live preview of the currently-being-recognized character."""
+        w = self.width()
+        box_size = 50
+
+        # Background
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(13, 14, 18, 180))
+        painter.drawRoundedRect(QRectF(w - box_size - 12, 8, box_size, box_size), 10, 10)
+
+        # Character
+        font = QFont("Inter", 24, QFont.Weight.Bold)
+        painter.setFont(font)
+
+        conf = self._live_preview_confidence
+        if conf > 0.8:
+            color = QColor(48, 255, 100, 230)  # Green = high confidence
+        elif conf > 0.5:
+            color = QColor(240, 160, 48, 230)  # Amber = medium
+        else:
+            color = QColor(248, 81, 73, 200)   # Red = low
+
+        painter.setPen(color)
+        painter.drawText(
+            QRectF(w - box_size - 12, 8, box_size, box_size),
+            Qt.AlignmentFlag.AlignCenter,
+            self._live_preview_char
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -322,7 +431,6 @@ class FullscreenDrawingWindow(QWidget):
         btn_move = QPushButton("Move Mode")
         btn_move.setCheckable(True)
         btn_move.setStyleSheet(self._btn_style())
-        btn_move.toggled.connect(self._fs_canvas.set_move_mode if hasattr(self, '_fs_canvas') else lambda v: None)
         tb_layout.addWidget(btn_move)
 
         btn_undo = QPushButton("Undo")
