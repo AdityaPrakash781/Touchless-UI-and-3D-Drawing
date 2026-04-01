@@ -32,8 +32,9 @@ HAND_MODEL = GESTURE_DIR / "hand_landmarker.task"
 
 
 class KalmanFilter:
-    """Simple 1D Kalman Filter for smoothing noisy signals."""
-    def __init__(self, process_variance: float = 1e-5, measurement_variance: float = 1e-3):
+    """Simple 1D Kalman Filter for smoothing noisy signals.
+    Tuned for lower latency and high responsiveness."""
+    def __init__(self, process_variance: float = 1e-2, measurement_variance: float = 1e-2):
         self.process_variance = process_variance
         self.measurement_variance = measurement_variance
         self.posteriari_estimate = 0.0
@@ -83,6 +84,7 @@ class GestureTracker(QThread):
 
     gesture_detected = pyqtSignal(str, str, float)
     finger_moved = pyqtSignal(float, float, float)
+    control_gesture_state = pyqtSignal(str, float)
     hand_lost = pyqtSignal()
     hand_found = pyqtSignal()
     status_changed = pyqtSignal(str)
@@ -164,7 +166,7 @@ class GestureTracker(QThread):
         options = HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(HAND_MODEL)),
             running_mode=RunningMode.IMAGE,
-            num_hands=1,
+            num_hands=2,
             min_hand_detection_confidence=0.5,
             min_hand_presence_confidence=0.5,
             min_tracking_confidence=0.5,
@@ -198,50 +200,58 @@ class GestureTracker(QThread):
                     if self._hand_lost_count > 0:
                         print("DEBUG: Hand FOUND")
                         self.hand_found.emit()
-                    self._hand_lost_count = 0
-                    hand_lms = result.hand_landmarks[0]
+                    # Sort hands by X-coordinate of wrist (landmark 0)
+                    # Lower X means Left side of screen, Higher X means Right side.
+                    sorted_hands = sorted(result.hand_landmarks, key=lambda h: h[0].x)
+                    
+                    if len(sorted_hands) >= 2:
+                        control_lms = sorted_hands[0] # Left side
+                        drawing_lms = sorted_hands[1] # Right side
+                    else:
+                        # Only 1 hand -> Used as Control Hand so VLC actions still work
+                        control_lms = sorted_hands[0]
+                        drawing_lms = None
 
-                    # Extract landmarks
-                    landmarks = self._normalize_landmarks(hand_lms)
-                    if landmarks is not None:
-                        gesture, confidence = self._classify(landmarks)
-                        
-                        # Log ALL predictions for debugging
-                        if gesture:
-                            print(f"DEBUG: Model prediction: {gesture} ({confidence:.2f})")
+                    # Handle Control Hand (Secondary)
+                    if control_lms:
+                        landmarks = self._normalize_landmarks(control_lms)
+                        if landmarks is not None:
+                            gesture, confidence = self._classify(landmarks)
 
-                        if gesture and confidence >= self.CONFIDENCE_THRESHOLD:
-                            consecutive_predictions.append(gesture)
-                            if len(consecutive_predictions) > self.STABILITY_COUNT:
-                                consecutive_predictions = consecutive_predictions[-self.STABILITY_COUNT:]
+                            if gesture and confidence >= self.CONFIDENCE_THRESHOLD:
+                                consecutive_predictions.append(gesture)
+                                if len(consecutive_predictions) > self.STABILITY_COUNT:
+                                    consecutive_predictions = consecutive_predictions[-self.STABILITY_COUNT:]
 
-                            if (len(consecutive_predictions) >= self.STABILITY_COUNT and
-                                    len(set(consecutive_predictions)) == 1):
-                                now = time.time()
-                                if (gesture != last_gesture or
-                                        now - last_trigger_time >= self.DEBOUNCE_TIME):
-                                    action = self._class_to_action.get(gesture, "none")
-                                    if action != "none":
-                                        self.gesture_detected.emit(
-                                            gesture, action, confidence
-                                        )
-                                        last_gesture = gesture
-                                        last_trigger_time = now
-                        else:
-                            consecutive_predictions.clear()
+                                if (len(consecutive_predictions) >= self.STABILITY_COUNT and
+                                        len(set(consecutive_predictions)) == 1):
+                                        
+                                    # Always emit continuous state for drawing control
+                                    self.control_gesture_state.emit(gesture, confidence)
+                                    
+                                    # Execute Debounced logic for VLC triggers
+                                    now = time.time()
+                                    if (gesture != last_gesture or
+                                            now - last_trigger_time >= self.DEBOUNCE_TIME):
+                                        action = self._class_to_action.get(gesture, "none")
+                                        if action != "none":
+                                            self.gesture_detected.emit(
+                                                gesture, action, confidence
+                                            )
+                                            last_gesture = gesture
+                                            last_trigger_time = now
+                            else:
+                                consecutive_predictions.clear()
+                                self.control_gesture_state.emit("none", 0.0)
 
-                        # ── Finger Tracking (Smoothed) ──
+                    # Handle Drawing Hand (Primary)
+                    if drawing_lms:
                         # Index finger tip is landmark 8
-                        idx_tip = hand_lms[8]
+                        idx_tip = drawing_lms[8]
                         sx, sy, sz = self._finger_smoother.update(idx_tip.x, idx_tip.y, idx_tip.z)
                         self.finger_moved.emit(sx, sy, sz)
-
-                        # ── Landmark Buffering (for Temporal Models) ──
-                        self._landmark_buffer.append(landmarks)
-                        if len(self._landmark_buffer) > self.BUFFER_SIZE:
-                            self._landmark_buffer.pop(0)
                         
-                        self._hand_lost_count = 0
+                    self._hand_lost_count = 0
 
                 else:
                     consecutive_predictions.clear()

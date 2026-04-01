@@ -817,7 +817,7 @@ class MainWindow(QMainWindow):
             self._gesture_tracker.gesture_detected.connect(self._on_gesture_detected)
             self._gesture_tracker.finger_moved.connect(self._on_finger_moved)
             self._gesture_tracker.hand_lost.connect(lambda: self._set_drawing_active(False))
-            self._gesture_tracker.hand_found.connect(lambda: self._set_drawing_active(False))
+            self._gesture_tracker.control_gesture_state.connect(self._on_control_gesture)
             print("DEBUG: Gesture signals connected")
             self._gesture_tracker.status_changed.connect(
                 lambda msg: self.gesture_status.setText(f"Status: {msg}")
@@ -864,10 +864,6 @@ class MainWindow(QMainWindow):
         handler = action_map.get(custom_action)
         if handler:
             handler()
-        
-        # If the gesture was NOT 'one' (or whatever maps to 'draw'), stop drawing
-        if custom_action != "draw":
-            self._set_drawing_active(False)
 
     def _toggle_drawing_mode(self):
         """Action handler for the 'draw' action."""
@@ -887,19 +883,22 @@ class MainWindow(QMainWindow):
         else:
             # Only show 'Ready' if the tracker is actually running
             if self._gesture_tracker and self._gesture_tracker.isRunning():
-                self.drawing_indicator.setText("🟢 Ready (Show 'One' Gesture)")
+                self.drawing_indicator.setText("🟢 Ready (Dual Hand: Fist on Left to Draw)")
                 self.drawing_indicator.setStyleSheet("color: #3fb950; font-weight: bold; font-size: 14px;")
             else:
                 self.drawing_indicator.setText("🛑 Tracking Disabled")
                 self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: bold; font-size: 14px;")
 
+    def _on_control_gesture(self, gesture: str, confidence: float):
+        """Handle the secondary hand's gesture to toggle drawing mode."""
+        if gesture == "fist":
+            self._set_drawing_active(True)
+        else:
+            self._set_drawing_active(False)
+
     def _on_finger_moved(self, x: float, y: float, z: float):
         """Handle smoothed finger movement from tracker."""
-        # Auto-timeout for drawing mode if no 'draw' gesture received for a while
         if self._drawing_active:
-            if time.time() - self._last_draw_time > 1.5:
-                self._set_drawing_active(False)
-            
             # Throttled debug for movement
             if not hasattr(self, "_last_move_log") or time.time() - self._last_move_log > 0.5:
                 print(f"DEBUG: Smooth Finger -> x:{x:.2f}, y:{y:.2f}, z:{z:.2f}")
