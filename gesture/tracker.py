@@ -191,8 +191,11 @@ class GestureTracker(QThread):
             self._class_names = model_data["class_names"]
             self._needs_scaling = model_data.get("needs_scaling", False)
 
-            with open(SCALER_FILE, "rb") as f:
-                self._scaler = pickle.load(f)
+            if self._needs_scaling:
+                with open(SCALER_FILE, "rb") as f:
+                    self._scaler = pickle.load(f)
+            else:
+                self._scaler = None
 
             if CLASS_MAP_FILE.exists():
                 with open(CLASS_MAP_FILE, "r") as f:
@@ -290,8 +293,7 @@ class GestureTracker(QThread):
                         self._pinch_close_frames = 0
                     else:
                         # Between thresholds: hold current state.
-                        self._pinch_close_frames = 0
-                        self._pinch_open_frames = 0
+                        pass
 
                     if (not self._is_pinching and
                             self._pinch_close_frames >= self.PINCH_ENGAGE_FRAMES):
