@@ -19,9 +19,10 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLineEdit, QPushButton, QLabel,
     QFrame, QScrollArea, QSizePolicy, QStatusBar,
     QApplication, QMessageBox, QComboBox, QGridLayout,
+    QGraphicsOpacityEffect,
     QFileDialog, QInputDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, QPoint, QRect, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QKeySequence, QShortcut, QFont, QIcon, QAction, QActionGroup
 
 import vlc
@@ -173,7 +174,20 @@ class MainWindow(QMainWindow):
         self._recognize_timer = QTimer(self)  # Delayed recognition after stroke ends
         self._recognize_timer.setSingleShot(True)
         self._recognize_timer.timeout.connect(self._auto_recognize)
+        self._air_search_timer = QTimer(self)
+        self._air_search_timer.setSingleShot(True)
+        self._air_search_timer.timeout.connect(self._search_from_recognized_text)
         self._handling_gesture_error = False
+        self._last_auto_search_query = ""
+
+        # Air cursor / click state (video pane)
+        self._air_cursor = None
+        self._air_cursor_pos = QPoint(0, 0)
+        self._air_click_animations = []
+        self._air_last_pinch = False
+        self._air_last_click_time = 0.0
+        self._air_double_click_window = 0.45
+        self._air_draw_tab_index = -1
 
         # New feature windows
         self._pip_window = None
@@ -259,6 +273,7 @@ class MainWindow(QMainWindow):
         self.video_frame = VideoFrame()
         self.video_frame.double_clicked.connect(self._toggle_fullscreen)
         content_layout.addWidget(self.video_frame, stretch=7)
+        self._setup_air_cursor()
 
         # Sidebar
         sidebar = self._build_sidebar()
@@ -304,6 +319,7 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QTabWidget:
         """Build the sidebar tab widget with YouTube and Local tabs."""
         tabs = QTabWidget()
+        self.sidebar_tabs = tabs
         tabs.setMinimumWidth(360)
         tabs.setMaximumWidth(460)
 
@@ -644,12 +660,87 @@ class MainWindow(QMainWindow):
 
         drawing_layout.addLayout(draw_btn_grid)
 
-        tabs.addTab(drawing_widget, "AIR DRAW")
+        self._air_draw_tab_index = tabs.addTab(drawing_widget, "AIR DRAW")
 
         # Populate recent files
         self._refresh_recent_files()
 
         return tabs
+
+    def _setup_air_cursor(self):
+        """Create a visual air cursor overlay for video interaction."""
+        self._air_cursor = QLabel(self.video_frame)
+        self._air_cursor.setFixedSize(22, 22)
+        self._air_cursor.setStyleSheet(
+            "background: rgba(240,160,48,0.18);"
+            "border: 2px solid rgba(240,160,48,0.95);"
+            "border-radius: 11px;"
+        )
+        self._air_cursor.hide()
+
+    def _update_air_cursor(self, nx: float, ny: float):
+        """Move the air cursor using normalized coordinates from tracker."""
+        if not self._air_cursor:
+            return
+        w = max(1, self.video_frame.width())
+        h = max(1, self.video_frame.height())
+        cx = int(max(0.0, min(1.0, nx)) * (w - 1))
+        cy = int(max(0.0, min(1.0, ny)) * (h - 1))
+        self._air_cursor_pos = QPoint(cx, cy)
+        self._air_cursor.move(cx - self._air_cursor.width() // 2, cy - self._air_cursor.height() // 2)
+        if not self._air_cursor.isVisible():
+            self._air_cursor.show()
+            self._air_cursor.raise_()
+
+    def _show_air_click_effect(self):
+        """Draw a short ripple effect where air click happened."""
+        ripple = QLabel(self.video_frame)
+        ripple.setStyleSheet(
+            "background: transparent;"
+            "border: 2px solid rgba(255,220,140,0.95);"
+            "border-radius: 16px;"
+        )
+        ripple.setGeometry(
+            self._air_cursor_pos.x() - 16,
+            self._air_cursor_pos.y() - 16,
+            32,
+            32,
+        )
+        opacity = QGraphicsOpacityEffect(ripple)
+        ripple.setGraphicsEffect(opacity)
+        ripple.show()
+        ripple.raise_()
+
+        anim_geom = QPropertyAnimation(ripple, b"geometry", self)
+        anim_geom.setDuration(220)
+        anim_geom.setStartValue(QRect(self._air_cursor_pos.x() - 16, self._air_cursor_pos.y() - 16, 32, 32))
+        anim_geom.setEndValue(QRect(self._air_cursor_pos.x() - 34, self._air_cursor_pos.y() - 34, 68, 68))
+        anim_geom.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        anim_opacity = QPropertyAnimation(opacity, b"opacity", self)
+        anim_opacity.setDuration(220)
+        anim_opacity.setStartValue(0.95)
+        anim_opacity.setEndValue(0.0)
+
+        def _cleanup():
+            if ripple:
+                ripple.deleteLater()
+            self._air_click_animations = [a for a in self._air_click_animations if a not in (anim_geom, anim_opacity)]
+
+        anim_opacity.finished.connect(_cleanup)
+        self._air_click_animations.extend([anim_geom, anim_opacity])
+        anim_geom.start()
+        anim_opacity.start()
+
+    def _trigger_air_click(self, double_click: bool):
+        """Map air click to video controls."""
+        self._show_air_click_effect()
+        if double_click:
+            self._toggle_fullscreen()
+            self.status_bar.showMessage("Air double-click: Fullscreen toggled")
+        else:
+            self._on_play_pause()
+            self.status_bar.showMessage("Air click: Play/Pause")
 
     # ── Menu Bar ─────────────────────────────────────────────────────
 
@@ -1261,6 +1352,9 @@ class MainWindow(QMainWindow):
             self.btn_gesture_toggle.setText("Start Gesture Control")
             self.btn_draw_toggle_tracking.setText("Start Tracking")
             self.gesture_status.setText("Status: Inactive")
+            self._air_last_pinch = False
+            if self._air_cursor:
+                self._air_cursor.hide()
             self.drawing_indicator.setText("TRACKING DISABLED")
             self.drawing_indicator.setStyleSheet("color: #f85149; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
             self.canvas.clear_pinch_indicator()
@@ -1286,6 +1380,7 @@ class MainWindow(QMainWindow):
                 self._gesture_tracker.set_emit_frames(True)
             self._gesture_tracker.set_drawing_mode(True)
             self._gesture_tracker.start()
+            self._air_last_pinch = False
             self.btn_gesture_toggle.setText("Stop Gesture Control")
             self.btn_draw_toggle_tracking.setText("Stop Tracking")
             self.drawing_indicator.setText("READY — Pinch to Draw")
@@ -1361,6 +1456,30 @@ class MainWindow(QMainWindow):
 
     def _on_pinch_moved(self, x: float, y: float, z: float, is_pinching: bool):
         """Handle pinch point movement — drives drawing and air writing."""
+        self._update_air_cursor(x, y)
+
+        drawing_tab_active = (
+            hasattr(self, "sidebar_tabs")
+            and self._air_draw_tab_index >= 0
+            and self.sidebar_tabs.currentIndex() == self._air_draw_tab_index
+        )
+
+        # Air click is available when not actively in AIR DRAW tab.
+        if not drawing_tab_active and is_pinching and not self._air_last_pinch:
+            now = time.time()
+            is_double = (now - self._air_last_click_time) <= self._air_double_click_window
+            self._air_last_click_time = now
+            self._trigger_air_click(double_click=is_double)
+
+        self._air_last_pinch = is_pinching
+
+        if not drawing_tab_active:
+            if self._is_pinching:
+                self._is_pinching = False
+                self._set_drawing_active(False)
+                self._air_engine.end_stroke()
+            return
+
         try:
             # Update pinch indicator on canvas
             self.canvas.set_pinch_indicator(x, y, is_pinching)
@@ -1445,6 +1564,26 @@ class MainWindow(QMainWindow):
         if self._fullscreen_draw and self._fullscreen_draw.isVisible():
             self._fullscreen_draw.canvas.set_recognized_text(text)
 
+        query = text.strip()
+        if query:
+            self.search_input.setText(query)
+            self._air_search_timer.start(900)
+        else:
+            self._air_search_timer.stop()
+            self._last_auto_search_query = ""
+
+    def _search_from_recognized_text(self):
+        """Auto-search YouTube using current recognized text."""
+        query = self.search_input.text().strip()
+        if not query:
+            return
+        if query == self._last_auto_search_query:
+            return
+        if self._search_worker and self._search_worker.isRunning():
+            return
+        self._last_auto_search_query = query
+        self._search_youtube()
+
     def _air_writing_backspace(self):
         """Remove last recognized character."""
         self._air_engine.backspace()
@@ -1455,6 +1594,8 @@ class MainWindow(QMainWindow):
         self.canvas.clear()
         self._air_engine.clear_text()
         self._air_engine.clear_board()
+        self._air_search_timer.stop()
+        self._last_auto_search_query = ""
         self._update_recognized_text()
         self.canvas.set_live_preview("", 0.0)
 
@@ -1510,6 +1651,9 @@ class MainWindow(QMainWindow):
         self.btn_gesture_toggle.setText("Start Gesture Control")
         self.btn_draw_toggle_tracking.setText("Start Tracking")
         self.status_bar.showMessage(f"Gesture error: {error_msg}")
+        if self._air_cursor:
+            self._air_cursor.hide()
+        self._air_last_pinch = False
         QMessageBox.warning(self, "Gesture Error", error_msg)
         self._handling_gesture_error = False
 
@@ -1627,7 +1771,11 @@ class MainWindow(QMainWindow):
         self.update_timer.stop()
         if self._recognize_timer:
             self._recognize_timer.stop()
+        if self._air_search_timer:
+            self._air_search_timer.stop()
         self._stop_gesture_tracker(wait_ms=800)
+        if self._air_cursor:
+            self._air_cursor.hide()
         if self._pip_window:
             self._close_pip()
         if self._hand_preview:
