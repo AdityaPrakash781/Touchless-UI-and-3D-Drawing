@@ -69,6 +69,41 @@ python3 main.py
 
 ---
 
+## 🪟 Windows Installer (.exe)
+
+This repository now includes a packaging pipeline that builds a **single setup executable**:
+
+- Output: `dist-installer/GestureVLC-Setup.exe`
+- Installer includes the packaged app and Python runtime dependencies.
+- During install, it:
+  - downloads `gesture/hand_landmarker.task` if missing,
+  - attempts to install VLC via `winget` if VLC is not detected.
+
+### Prerequisites (build machine)
+
+- Python 3.10+
+- Inno Setup 6 (for `ISCC.exe`)
+
+### Build Commands (PowerShell)
+
+```powershell
+cd Touchless-UI-and-3D-Drawing-main
+powershell -ExecutionPolicy Bypass -File installer/build_installer.ps1
+```
+
+If you only want to build the packaged app folder (without creating setup.exe):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer/build_installer.ps1 -SkipInno
+```
+
+### Installer Artifacts
+
+- App bundle: `dist/GestureVLC/`
+- Final installer: `dist-installer/GestureVLC-Setup.exe`
+
+---
+
 ## 🎮 Gesture Controls
 
 | Gesture | Default Action |

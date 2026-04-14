@@ -170,7 +170,10 @@ class MainWindow(QMainWindow):
         # Air Writing Engine
         self._air_engine = AirWritingEngine()
         self._air_model_loaded = False
-        self._recognize_timer = None  # Timer for delayed recognition after stroke ends
+        self._recognize_timer = QTimer(self)  # Delayed recognition after stroke ends
+        self._recognize_timer.setSingleShot(True)
+        self._recognize_timer.timeout.connect(self._auto_recognize)
+        self._handling_gesture_error = False
 
         # New feature windows
         self._pip_window = None
@@ -1248,9 +1251,7 @@ class MainWindow(QMainWindow):
     def _toggle_gesture_tracking(self):
         """Start or stop gesture tracking."""
         if self._gesture_tracker and self._gesture_tracker.isRunning():
-            self._gesture_tracker.stop()
-            self._gesture_tracker.wait(2000)
-            self._gesture_tracker = None
+            self._stop_gesture_tracker(wait_ms=500)
             if self._recognize_timer:
                 self._recognize_timer.stop()
             if self._is_pinching:
@@ -1291,6 +1292,16 @@ class MainWindow(QMainWindow):
             self.drawing_indicator.setStyleSheet("color: #3fb950; font-weight: 700; font-size: 13px; letter-spacing: 0.05em;")
             self.status_bar.showMessage("Gesture tracking started — pinch to draw")
 
+    def _stop_gesture_tracker(self, wait_ms: int = 500):
+        """Stop tracker thread without stalling the UI for long periods."""
+        tracker = self._gesture_tracker
+        if not tracker:
+            return
+        if tracker.isRunning():
+            tracker.stop()
+            tracker.wait(wait_ms)
+        self._gesture_tracker = None
+
     def _on_gesture_detected(self, gesture: str, action: str, confidence: float):
         """Handle a detected gesture by performing the mapped action."""
         # Use the USER's custom mapping, not the tracker's built-in one
@@ -1321,7 +1332,10 @@ class MainWindow(QMainWindow):
 
         handler = action_map.get(custom_action)
         if handler:
-            handler()
+            try:
+                handler()
+            except Exception as e:
+                self.status_bar.showMessage(f"Gesture action failed: {e}")
 
     # ── Air Writing & Pinch Drawing ──────────────────────────────────
 
@@ -1347,45 +1361,45 @@ class MainWindow(QMainWindow):
 
     def _on_pinch_moved(self, x: float, y: float, z: float, is_pinching: bool):
         """Handle pinch point movement — drives drawing and air writing."""
-        # Update pinch indicator on canvas
-        self.canvas.set_pinch_indicator(x, y, is_pinching)
-        if self._fullscreen_draw and self._fullscreen_draw.isVisible():
-            self._fullscreen_draw.canvas.set_pinch_indicator(x, y, is_pinching)
-
-        if is_pinching:
-            # Pen is down — draw
-            if not self._is_pinching:
-                # Pinch just started
-                self._is_pinching = True
-                self._set_drawing_active(True)
-                self._air_engine.begin_stroke()
-                # Cancel any pending recognition timer
-                if self._recognize_timer:
-                    self._recognize_timer.stop()
-
-            # Add point to canvas and air writing engine
-            self.canvas.add_point(x, y, z)
-            self._air_engine.add_stroke_point(x, y)
-
-            # Also send to fullscreen canvas if open
+        try:
+            # Update pinch indicator on canvas
+            self.canvas.set_pinch_indicator(x, y, is_pinching)
             if self._fullscreen_draw and self._fullscreen_draw.isVisible():
-                self._fullscreen_draw.canvas.add_point(x, y, z)
-        else:
-            # Pen is up
-            if self._is_pinching:
-                # Pinch just released — end stroke
-                self._is_pinching = False
-                self._set_drawing_active(False)
-                self._air_engine.end_stroke()
+                self._fullscreen_draw.canvas.set_pinch_indicator(x, y, is_pinching)
 
-                # Start a delayed recognition (wait for multi-stroke chars)
-                if self._air_model_loaded and self._air_engine.has_content():
+            if is_pinching:
+                # Pen is down — draw
+                if not self._is_pinching:
+                    # Pinch just started
+                    self._is_pinching = True
+                    self._set_drawing_active(True)
+                    self._air_engine.begin_stroke()
+                    # Cancel any pending recognition timer
                     if self._recognize_timer:
                         self._recognize_timer.stop()
-                    self._recognize_timer = QTimer(self)
-                    self._recognize_timer.setSingleShot(True)
-                    self._recognize_timer.timeout.connect(self._auto_recognize)
-                    self._recognize_timer.start(1500)  # 1.5s after last stroke
+
+                # Add point to canvas and air writing engine
+                self.canvas.add_point(x, y, z)
+                self._air_engine.add_stroke_point(x, y)
+
+                # Also send to fullscreen canvas if open
+                if self._fullscreen_draw and self._fullscreen_draw.isVisible():
+                    self._fullscreen_draw.canvas.add_point(x, y, z)
+            else:
+                # Pen is up
+                if self._is_pinching:
+                    # Pinch just released — end stroke
+                    self._is_pinching = False
+                    self._set_drawing_active(False)
+                    self._air_engine.end_stroke()
+
+                    # Start a delayed recognition (wait for multi-stroke chars)
+                    if self._air_model_loaded and self._air_engine.has_content():
+                        if self._recognize_timer:
+                            self._recognize_timer.stop()
+                            self._recognize_timer.start(1500)  # 1.5s after last stroke
+        except Exception as e:
+            self.status_bar.showMessage(f"Drawing update failed: {e}")
 
     def _auto_recognize(self):
         """Auto-recognize after a pause in drawing."""
@@ -1481,10 +1495,11 @@ class MainWindow(QMainWindow):
 
     def _on_gesture_error(self, error_msg: str):
         """Handle gesture tracking errors."""
-        if self._gesture_tracker and self._gesture_tracker.isRunning():
-            self._gesture_tracker.stop()
-            self._gesture_tracker.wait(2000)
-        self._gesture_tracker = None
+        if self._handling_gesture_error:
+            return
+        self._handling_gesture_error = True
+
+        self._stop_gesture_tracker(wait_ms=300)
         if self._is_pinching:
             self._air_engine.end_stroke()
         self._is_pinching = False
@@ -1496,6 +1511,7 @@ class MainWindow(QMainWindow):
         self.btn_draw_toggle_tracking.setText("Start Tracking")
         self.status_bar.showMessage(f"Gesture error: {error_msg}")
         QMessageBox.warning(self, "Gesture Error", error_msg)
+        self._handling_gesture_error = False
 
     # ── Hand Preview Window ──────────────────────────────────────────
 
@@ -1611,9 +1627,7 @@ class MainWindow(QMainWindow):
         self.update_timer.stop()
         if self._recognize_timer:
             self._recognize_timer.stop()
-        if self._gesture_tracker and self._gesture_tracker.isRunning():
-            self._gesture_tracker.stop()
-            self._gesture_tracker.wait(2000)
+        self._stop_gesture_tracker(wait_ms=800)
         if self._pip_window:
             self._close_pip()
         if self._hand_preview:

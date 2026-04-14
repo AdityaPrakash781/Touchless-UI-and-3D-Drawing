@@ -19,6 +19,7 @@ import pickle
 import json
 import cv2
 from pathlib import Path
+import urllib.request
 
 import mediapipe as mp
 from mediapipe.tasks.python import BaseOptions
@@ -32,11 +33,52 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QImage
 
 
-GESTURE_DIR = Path(__file__).parent
-MODEL_FILE = GESTURE_DIR / "gesture_model.pkl"
-SCALER_FILE = GESTURE_DIR / "gesture_scaler.pkl"
-CLASS_MAP_FILE = GESTURE_DIR / "class_map.json"
-HAND_MODEL = GESTURE_DIR / "hand_landmarker.task"
+HAND_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/latest/hand_landmarker.task"
+)
+
+
+def _candidate_gesture_dirs() -> list[Path]:
+    """Return likely gesture asset directories for dev and packaged builds."""
+    dirs: list[Path] = []
+
+    # Source run: .../gesture/tracker.py
+    dirs.append(Path(__file__).resolve().parent)
+
+    # PyInstaller one-folder: app root + _internal
+    exe_dir = Path(sys.executable).resolve().parent
+    dirs.append(exe_dir / "_internal" / "gesture")
+    dirs.append(exe_dir / "gesture")
+
+    # CWD fallback (helps debugging/custom launches)
+    dirs.append(Path.cwd() / "gesture")
+
+    seen = set()
+    unique: list[Path] = []
+    for d in dirs:
+        key = str(d)
+        if key not in seen:
+            seen.add(key)
+            unique.append(d)
+    return unique
+
+
+def _resolve_asset(name: str) -> Path | None:
+    """Find an asset file in any known runtime gesture directory."""
+    for d in _candidate_gesture_dirs():
+        p = d / name
+        if p.exists():
+            return p
+    return None
+
+
+def _preferred_gesture_dir() -> Path:
+    """Choose preferred gesture directory for saving/downloading runtime assets."""
+    for d in _candidate_gesture_dirs():
+        if d.exists():
+            return d
+    return _candidate_gesture_dirs()[0]
 
 # MediaPipe landmark connections for drawing skeleton
 HAND_CONNECTIONS = [
@@ -136,6 +178,7 @@ class GestureTracker(QThread):
     PINCH_RELEASE_THRESHOLD = 0.09  # Hysteresis: slightly higher to release
     PINCH_ENGAGE_FRAMES = 3
     PINCH_RELEASE_FRAMES = 2
+    UI_EMIT_INTERVAL = 1.0 / 45.0  # Cap high-frequency UI updates to ~45 FPS
 
     def __init__(self, camera_index: int = 0, parent=None):
         super().__init__(parent)
@@ -143,6 +186,7 @@ class GestureTracker(QThread):
         self._running = False
         self._model = None
         self._scaler = None
+        self._hand_model_path: Path | None = None
         self._class_names = []
         self._class_to_action = {}
         self._needs_scaling = False
@@ -163,6 +207,8 @@ class GestureTracker(QThread):
         self._pinch_close_frames = 0
         self._pinch_open_frames = 0
         self._last_pinch_point: tuple[float, float, float] | None = None
+        self._last_pinch_emit_time = 0.0
+        self._last_finger_emit_time = 0.0
 
     def set_emit_frames(self, enabled: bool):
         """Toggle webcam frame emission for the live preview."""
@@ -178,27 +224,48 @@ class GestureTracker(QThread):
     def load_model(self) -> bool:
         """Load the trained gesture model and class mapping."""
         try:
-            if not MODEL_FILE.exists():
+            model_file = _resolve_asset("gesture_model.pkl")
+            scaler_file = _resolve_asset("gesture_scaler.pkl")
+            class_map_file = _resolve_asset("class_map.json")
+            hand_model = _resolve_asset("hand_landmarker.task")
+
+            if model_file is None:
                 self.error.emit("Gesture model not found. Run training first.")
                 return False
-            if not HAND_MODEL.exists():
-                self.error.emit("hand_landmarker.task not found in gesture/ dir.")
-                return False
 
-            with open(MODEL_FILE, "rb") as f:
+            if hand_model is None:
+                try:
+                    target_dir = _preferred_gesture_dir()
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    target_file = target_dir / "hand_landmarker.task"
+                    self.status_changed.emit("Downloading hand landmark model...")
+                    with urllib.request.urlopen(HAND_MODEL_URL, timeout=20) as response:
+                        with open(target_file, "wb") as out:
+                            out.write(response.read())
+                    hand_model = target_file
+                except Exception as e:
+                    self.error.emit(f"hand_landmarker.task missing and download failed: {e}")
+                    return False
+
+            self._hand_model_path = hand_model
+
+            with open(model_file, "rb") as f:
                 model_data = pickle.load(f)
             self._model = model_data["model"]
             self._class_names = model_data["class_names"]
             self._needs_scaling = model_data.get("needs_scaling", False)
 
             if self._needs_scaling:
-                with open(SCALER_FILE, "rb") as f:
+                if scaler_file is None:
+                    self.error.emit("Scaler file missing but model requires scaling.")
+                    return False
+                with open(scaler_file, "rb") as f:
                     self._scaler = pickle.load(f)
             else:
                 self._scaler = None
 
-            if CLASS_MAP_FILE.exists():
-                with open(CLASS_MAP_FILE, "r") as f:
+            if class_map_file is not None:
+                with open(class_map_file, "r") as f:
                     class_map = json.load(f)
                 self._class_to_action = class_map.get("class_to_action", {})
             else:
@@ -233,7 +300,7 @@ class GestureTracker(QThread):
 
         self.status_changed.emit("Initializing AI Backend...")
         options = HandLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=str(HAND_MODEL)),
+            base_options=BaseOptions(model_asset_path=str(self._hand_model_path)),
             running_mode=RunningMode.IMAGE,
             num_hands=1,
             min_hand_detection_confidence=0.5,
@@ -313,7 +380,10 @@ class GestureTracker(QThread):
                     # Smooth the pinch point
                     sx, sy, sz = self._pinch_smoother.update(mid_x, mid_y, mid_z)
                     self._last_pinch_point = (sx, sy, sz)
-                    self.pinch_moved.emit(sx, sy, sz, self._is_pinching)
+                    now_emit = time.time()
+                    if now_emit - self._last_pinch_emit_time >= self.UI_EMIT_INTERVAL:
+                        self.pinch_moved.emit(sx, sy, sz, self._is_pinching)
+                        self._last_pinch_emit_time = now_emit
 
                     # ── Gesture Classification (skip during active drawing) ──
                     if not (self._drawing_mode and self._is_pinching):
@@ -346,7 +416,9 @@ class GestureTracker(QThread):
                             fsx, fsy, fsz = self._finger_smoother.update(
                                 idx_tip.x, idx_tip.y, idx_tip.z
                             )
-                            self.finger_moved.emit(fsx, fsy, fsz)
+                            if now_emit - self._last_finger_emit_time >= self.UI_EMIT_INTERVAL:
+                                self.finger_moved.emit(fsx, fsy, fsz)
+                                self._last_finger_emit_time = now_emit
 
                             self._landmark_buffer.append(landmarks)
                             if len(self._landmark_buffer) > self.BUFFER_SIZE:
