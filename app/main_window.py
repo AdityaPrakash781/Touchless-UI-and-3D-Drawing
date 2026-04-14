@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLineEdit, QPushButton, QLabel,
     QFrame, QScrollArea, QSizePolicy, QStatusBar,
     QApplication, QMessageBox, QComboBox, QGridLayout,
+    QCheckBox,
     QGraphicsOpacityEffect,
     QFileDialog, QInputDialog
 )
@@ -177,6 +178,7 @@ class MainWindow(QMainWindow):
         self._air_search_timer = QTimer(self)
         self._air_search_timer.setSingleShot(True)
         self._air_search_timer.timeout.connect(self._search_from_recognized_text)
+        self._auto_search_enabled = False
         self._handling_gesture_error = False
         self._last_auto_search_query = ""
 
@@ -188,6 +190,7 @@ class MainWindow(QMainWindow):
         self._air_last_click_time = 0.0
         self._air_double_click_window = 0.45
         self._air_draw_tab_index = -1
+        self._youtube_tab_index = -1
 
         # New feature windows
         self._pip_window = None
@@ -392,7 +395,7 @@ class MainWindow(QMainWindow):
         self.yt_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         yt_layout.addWidget(self.yt_status)
 
-        tabs.addTab(yt_widget, "YOUTUBE")
+        self._youtube_tab_index = tabs.addTab(yt_widget, "YOUTUBE")
 
         # ── Local Files Tab ──
         local_widget = QWidget()
@@ -659,6 +662,20 @@ class MainWindow(QMainWindow):
         draw_btn_grid.addWidget(self.btn_fullscreen_draw, 1, 2)
 
         drawing_layout.addLayout(draw_btn_grid)
+
+        search_row = QHBoxLayout()
+        self.chk_auto_search = QCheckBox("Auto-search on pause")
+        self.chk_auto_search.setChecked(False)
+        self.chk_auto_search.toggled.connect(self._set_auto_search_enabled)
+        search_row.addWidget(self.chk_auto_search)
+
+        self.btn_search_text = QPushButton("Search Text")
+        self.btn_search_text.setObjectName("accentButton")
+        self.btn_search_text.setMinimumHeight(36)
+        self.btn_search_text.clicked.connect(self._search_recognized_now)
+        search_row.addWidget(self.btn_search_text, alignment=Qt.AlignmentFlag.AlignRight)
+
+        drawing_layout.addLayout(search_row)
 
         self._air_draw_tab_index = tabs.addTab(drawing_widget, "AIR DRAW")
 
@@ -1567,22 +1584,44 @@ class MainWindow(QMainWindow):
         query = text.strip()
         if query:
             self.search_input.setText(query)
-            self._air_search_timer.start(900)
+            if self._auto_search_enabled:
+                self._air_search_timer.start(1500)
         else:
             self._air_search_timer.stop()
             self._last_auto_search_query = ""
 
-    def _search_from_recognized_text(self):
+    def _search_from_recognized_text(self, force: bool = False):
         """Auto-search YouTube using current recognized text."""
         query = self.search_input.text().strip()
         if not query:
             return
-        if query == self._last_auto_search_query:
+        if (not force) and query == self._last_auto_search_query:
             return
         if self._search_worker and self._search_worker.isRunning():
             return
         self._last_auto_search_query = query
+        if hasattr(self, "sidebar_tabs") and self._youtube_tab_index >= 0:
+            self.sidebar_tabs.setCurrentIndex(self._youtube_tab_index)
         self._search_youtube()
+
+    def _search_recognized_now(self):
+        """Use currently recognized text as finalized YouTube query."""
+        if self._recognize_timer:
+            self._recognize_timer.stop()
+        if self._air_engine.has_content():
+            self._auto_recognize()
+
+        query = self.search_input.text().strip()
+        if not query:
+            self.status_bar.showMessage("⚠ No recognized text to search")
+            return
+        self._search_from_recognized_text(force=True)
+
+    def _set_auto_search_enabled(self, enabled: bool):
+        """Toggle automatic search after handwriting pause."""
+        self._auto_search_enabled = enabled
+        mode = "ON" if enabled else "OFF"
+        self.status_bar.showMessage(f"Auto-search: {mode}")
 
     def _air_writing_backspace(self):
         """Remove last recognized character."""
