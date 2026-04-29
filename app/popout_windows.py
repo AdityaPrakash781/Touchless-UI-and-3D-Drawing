@@ -8,15 +8,23 @@ Pop-out windows for GestureVLC:
    with basic transport controls (like Zen browser PiP).
 """
 
+import os
 import sys
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QSizePolicy, QFrame, QComboBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
-from PyQt6.QtGui import QImage, QPixmap, QFont
+from PyQt6.QtGui import QImage, QPixmap, QFont, QIcon
 
 from app.styles import COLORS
+
+# ── Asset paths ──────────────────────────────────────────────────
+_ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+_ICON_PLAY     = os.path.join(_ASSETS_DIR, "play-button.png")
+_ICON_PAUSE    = os.path.join(_ASSETS_DIR, "video-pause-button.png")
+_ICON_BACKWARD = os.path.join(_ASSETS_DIR, "backward.png")
+_ICON_FORWARD  = os.path.join(_ASSETS_DIR, "fast-forward.png")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -141,18 +149,24 @@ class PictureInPictureWindow(QWidget):
         c_layout.setContentsMargins(12, 4, 12, 4)
         c_layout.setSpacing(10)
 
-        self.btn_rw = QPushButton("⏪")
+        self.btn_rw = QPushButton()
         self.btn_rw.setFixedSize(36, 36)
+        self.btn_rw.setIcon(QIcon(_ICON_BACKWARD))
+        self.btn_rw.setIconSize(QSize(18, 18))
         self.btn_rw.setStyleSheet(self._ctrl_style())
         self.btn_rw.clicked.connect(lambda: self.seek_relative.emit(-10000))
 
-        self.btn_play = QPushButton("▶")
+        self.btn_play = QPushButton()
         self.btn_play.setFixedSize(40, 40)
+        self.btn_play.setIcon(QIcon(_ICON_PLAY))
+        self.btn_play.setIconSize(QSize(22, 22))
         self.btn_play.setStyleSheet(self._play_style())
         self.btn_play.clicked.connect(self.play_pause.emit)
 
-        self.btn_ff = QPushButton("⏩")
+        self.btn_ff = QPushButton()
         self.btn_ff.setFixedSize(36, 36)
+        self.btn_ff.setIcon(QIcon(_ICON_FORWARD))
+        self.btn_ff.setIconSize(QSize(18, 18))
         self.btn_ff.setStyleSheet(self._ctrl_style())
         self.btn_ff.clicked.connect(lambda: self.seek_relative.emit(10000))
 
@@ -195,7 +209,8 @@ class PictureInPictureWindow(QWidget):
 
     def update_state(self, is_playing: bool, current_ms: int, total_ms: int):
         """Update play button icon and time display."""
-        self.btn_play.setText("⏸" if is_playing else "▶")
+        icon_path = _ICON_PAUSE if is_playing else _ICON_PLAY
+        self.btn_play.setIcon(QIcon(icon_path))
         self.time_label.setText(f"{_fmt(current_ms)} / {_fmt(total_ms)}")
 
     def closeEvent(self, event):

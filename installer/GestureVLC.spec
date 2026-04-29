@@ -31,6 +31,7 @@ datas += [
     (str(project_root / "gesture" / "gesture_scaler.pkl"), "gesture"),
     (str(project_root / "gesture" / "class_map.json"), "gesture"),
     (str(project_root / "gesture" / "gesture_settings.json"), "gesture"),
+    (str(project_root / "assets"), "assets"),
 ]
 
 # hand_landmarker.task is intentionally not bundled because it can be updated
@@ -72,6 +73,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(project_root / "assets" / "GestureVLC.ico"),
 )
 
 coll = COLLECT(

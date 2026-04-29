@@ -5,11 +5,21 @@ Sleek seek bar with amber accent, monospace timecodes,
 cinematic play/pause button, and refined volume/speed controls.
 """
 
+import os
+
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
     QSlider, QLabel, QComboBox, QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize
+from PyQt6.QtGui import QIcon
+
+# ── Asset paths ──────────────────────────────────────────────────
+_ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+_ICON_PLAY     = os.path.join(_ASSETS_DIR, "play-button.png")
+_ICON_PAUSE    = os.path.join(_ASSETS_DIR, "video-pause-button.png")
+_ICON_BACKWARD = os.path.join(_ASSETS_DIR, "backward.png")
+_ICON_FORWARD  = os.path.join(_ASSETS_DIR, "fast-forward.png")
 
 
 class TransportBar(QWidget):
@@ -98,17 +108,23 @@ class TransportBar(QWidget):
         self.btn_stop.setObjectName("transportBtn")
         self.btn_stop.setToolTip("Stop")
 
-        self.btn_rewind = QPushButton("⏪")
+        self.btn_rewind = QPushButton()
         self.btn_rewind.setObjectName("transportBtn")
         self.btn_rewind.setToolTip("Rewind 10s")
+        self.btn_rewind.setIcon(QIcon(_ICON_BACKWARD))
+        self.btn_rewind.setIconSize(QSize(22, 22))
 
-        self.btn_play_pause = QPushButton("▶")
+        self.btn_play_pause = QPushButton()
         self.btn_play_pause.setObjectName("playBtn")
         self.btn_play_pause.setToolTip("Play / Pause")
+        self.btn_play_pause.setIcon(QIcon(_ICON_PLAY))
+        self.btn_play_pause.setIconSize(QSize(28, 28))
 
-        self.btn_forward = QPushButton("⏩")
+        self.btn_forward = QPushButton()
         self.btn_forward.setObjectName("transportBtn")
         self.btn_forward.setToolTip("Forward 10s")
+        self.btn_forward.setIcon(QIcon(_ICON_FORWARD))
+        self.btn_forward.setIconSize(QSize(22, 22))
 
         controls_row.addWidget(self.btn_stop)
         controls_row.addSpacing(4)
@@ -212,7 +228,8 @@ class TransportBar(QWidget):
 
     def set_playing_state(self, is_playing: bool):
         """Update the play/pause button icon."""
-        self.btn_play_pause.setText("⏸" if is_playing else "▶")
+        icon_path = _ICON_PAUSE if is_playing else _ICON_PLAY
+        self.btn_play_pause.setIcon(QIcon(icon_path))
         self.btn_play_pause.setToolTip("Pause" if is_playing else "Play")
 
     def set_muted_state(self, is_muted: bool):

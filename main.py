@@ -45,7 +45,7 @@ except ImportError:
     pass  # Will be handled gracefully by AirWritingEngine
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtCore import Qt
 
 from app.main_window import MainWindow
@@ -64,6 +64,12 @@ def main():
     font = QFont("Inter", 11)
     font.setStyleHint(QFont.StyleHint.SansSerif)
     app.setFont(font)
+
+    # Set application icon
+    _root = os.path.dirname(os.path.abspath(__file__))
+    _icon_path = os.path.join(_root, "assets", "play-button.png")
+    if os.path.isfile(_icon_path):
+        app.setWindowIcon(QIcon(_icon_path))
 
     # Create and show main window
     window = MainWindow()
