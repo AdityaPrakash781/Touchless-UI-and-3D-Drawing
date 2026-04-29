@@ -288,9 +288,42 @@ class GestureTracker(QThread):
         self._running = True
 
         self.status_changed.emit("Opening Webcam...")
-        cap = cv2.VideoCapture(self.camera_index)
-        if not cap.isOpened():
-            self.error.emit(f"Could not open webcam (index {self.camera_index})")
+        cap = None
+
+        # On Windows, DirectShow (DSHOW) is often more reliable than default
+        backends = [
+            (cv2.CAP_DSHOW, "DirectShow"),
+            (cv2.CAP_ANY,   "Default"),
+        ]
+        indices_to_try = [self.camera_index]
+        if self.camera_index == 0:
+            indices_to_try += [1, 2]  # fallback to other indices
+
+        for idx in indices_to_try:
+            for backend, name in backends:
+                self.status_changed.emit(f"Trying camera {idx} ({name})...")
+                test_cap = cv2.VideoCapture(idx, backend)
+                if test_cap.isOpened():
+                    ret, _ = test_cap.read()
+                    if ret:
+                        cap = test_cap
+                        self.status_changed.emit(
+                            f"Webcam opened (index {idx}, {name})"
+                        )
+                        break
+                    test_cap.release()
+                else:
+                    test_cap.release()
+            if cap is not None:
+                break
+
+        if cap is None:
+            self.error.emit(
+                f"Could not open webcam (index {self.camera_index}). "
+                "Make sure your camera is connected, not in use by another app, "
+                "and that camera permissions are enabled in Windows Settings > "
+                "Privacy & security > Camera."
+            )
             return
 
         # Set camera resolution for performance

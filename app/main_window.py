@@ -1693,7 +1693,25 @@ class MainWindow(QMainWindow):
         if self._air_cursor:
             self._air_cursor.hide()
         self._air_last_pinch = False
-        QMessageBox.warning(self, "Gesture Error", error_msg)
+
+        # Show a more helpful message for webcam errors
+        if "webcam" in error_msg.lower() or "camera" in error_msg.lower():
+            detail = (
+                f"{error_msg}\n\n"
+                "Troubleshooting:\n"
+                "• Ensure a webcam is connected to your computer\n"
+                "• Close other apps that may be using the camera\n"
+                "  (Zoom, Teams, OBS, etc.)\n"
+                "• Check Windows Settings → Privacy & Security → Camera\n"
+                "  and allow camera access for desktop apps\n"
+                "• Try unplugging and reconnecting the webcam\n\n"
+                "The media player works normally without a camera.\n"
+                "Gesture control requires a working webcam."
+            )
+        else:
+            detail = error_msg
+
+        QMessageBox.warning(self, "Gesture Error", detail)
         self._handling_gesture_error = False
 
     # ── Hand Preview Window ──────────────────────────────────────────
