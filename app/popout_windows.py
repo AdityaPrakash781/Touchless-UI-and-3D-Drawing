@@ -21,10 +21,10 @@ from app.styles import COLORS
 
 # ── Asset paths ──────────────────────────────────────────────────
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
-_ICON_PLAY     = os.path.join(_ASSETS_DIR, "play-button.png")
-_ICON_PAUSE    = os.path.join(_ASSETS_DIR, "video-pause-button.png")
-_ICON_BACKWARD = os.path.join(_ASSETS_DIR, "backward.png")
-_ICON_FORWARD  = os.path.join(_ASSETS_DIR, "fast-forward.png")
+_ICON_PLAY     = os.path.join(_ASSETS_DIR, "play-button.png")        # dark icon on amber bg
+_ICON_PAUSE    = os.path.join(_ASSETS_DIR, "video-pause-button_light.png")  # light icon on amber bg
+_ICON_BACKWARD = os.path.join(_ASSETS_DIR, "backward_light.png")     # light icon on dark bg
+_ICON_FORWARD  = os.path.join(_ASSETS_DIR, "fast-forward_light.png") # light icon on dark bg
 
 
 # ═════════════════════════════════════════════════════════════════
